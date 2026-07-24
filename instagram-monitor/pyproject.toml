@@ -1,0 +1,48 @@
+# Projekt- und Werkzeug-Konfiguration des Instagram-Monitors.
+#
+# Enthält Einstellungen für:
+#   * ruff   – schneller Linter/Formatter (findet Fehler & Stilprobleme)
+#   * pyright/pytest – Typprüfung und Tests
+#
+# Für die reine Nutzung der App ist nichts davon nötig – das ist
+# Werkzeug für die Weiterentwicklung.
+
+[project]
+name = "instagram-monitor"
+version = "1.0.0"
+description = "Überwacht öffentliche Instagram-Konten und lädt neue Beiträge herunter."
+requires-python = ">=3.11"
+
+[tool.ruff]
+# Zeilenlänge großzügig – deutsche Kommentare sind oft etwas länger.
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# Sinnvolle Grundregeln: die WICHTIGEN Fehler zuerst – echte Bugs (F),
+# Bugbears (B), Import-Ordnung (I), grobe Stilfehler (E/W). Reine
+# „Modernisierungen“ (UP …) sind bewusst NICHT aktiv: Sie ändern nur den
+# Stil funktionierenden Codes und lenken vom Wesentlichen ab.
+select = ["E", "F", "I", "B", "W"]
+ignore = [
+    "E501",   # Zeilenlänge regelt der Formatter; harte Grenze stört bei Texten
+    "B008",   # Flask nutzt Funktionsaufrufe in Decorators – hier gewollt
+    "E402",   # bewusste Import-Platzierung (z. B. instaloader nach _CACHE_TTL)
+    "E702",   # kompakte einzeilige except-Zweige sind hier gewollt
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests dürfen assert & Co. großzügig nutzen.
+"tests/*" = ["B011"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-q"
+
+[tool.pyright]
+include = ["app", "tests", "web.py", "main.py"]
+# Anfängerfreundlich: nur echte Fehler, kein Meckern über fehlende
+# Typannotationen an jeder Ecke.
+typeCheckingMode = "basic"
+reportMissingImports = false

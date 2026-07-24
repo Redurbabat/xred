@@ -1,0 +1,82 @@
+name: Android-APK bauen
+
+# Baut bei jeder Änderung auf main automatisch die Android-App und
+# veröffentlicht die APK als GitHub-Release „apk“. So kann sie direkt
+# auf dem Handy heruntergeladen werden – ganz ohne PC.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "instagram-monitor/**"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    # Signatur-Material kommt NUR aus GitHub-Secrets (nichts davon liegt im
+    # Repo). Sind die Secrets nicht gesetzt, bleiben die Variablen leer und der
+    # Build signiert mit der Standard-Debug-Signatur (läuft trotzdem durch).
+    env:
+      IGMON_KEYSTORE_B64: ${{ secrets.IGMON_KEYSTORE_B64 }}
+      IGMON_STORE_PASSWORD: ${{ secrets.IGMON_STORE_PASSWORD }}
+      IGMON_KEY_PASSWORD: ${{ secrets.IGMON_KEY_PASSWORD }}
+      IGMON_KEY_ALIAS: ${{ secrets.IGMON_KEY_ALIAS }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # Chaquopy braucht ein Build-Python in derselben Version wie das
+      # eingebettete Python (3.12).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Signatur-Keystore aus Secret schreiben (falls vorhanden)
+        if: ${{ env.IGMON_KEYSTORE_B64 != '' }}
+        working-directory: instagram-monitor/android
+        run: |
+          echo "$IGMON_KEYSTORE_B64" | base64 -d > app/igmonitor.p12
+          echo "Keystore aus Secret geschrieben ($(wc -c < app/igmonitor.p12) Bytes)."
+
+      - name: APK bauen
+        working-directory: instagram-monitor/android
+        run: gradle --no-daemon assembleDebug
+
+      - name: APK umbenennen
+        run: cp instagram-monitor/android/app/build/outputs/apk/debug/app-debug.apk InstagramMonitor.apk
+
+      - name: APK als Release veröffentlichen
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk
+          name: "📱 Instagram Monitor – Android-App"
+          body: |
+            Neueste Android-App (wird bei jeder Änderung automatisch neu gebaut).
+
+            **Installation auf dem Handy:**
+            1. Diese Seite auf dem Handy öffnen und `InstagramMonitor.apk` herunterladen.
+            2. Die heruntergeladene Datei antippen → Installation aus unbekannten Quellen einmalig erlauben → installieren.
+            3. App öffnen – der Server startet automatisch im Hintergrund; danach wie gewohnt anmelden (am besten per sessionid, siehe „Erweitert“ im Anmelde-Feld).
+
+            Downloads („⤓ Gerät“) landen im Download-Ordner des Handys.
+          files: InstagramMonitor.apk
+
+      # Zusätzlich als Build-Artefakt sichern (falls das Release fehlschlägt).
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: InstagramMonitor-APK
+          path: instagram-monitor/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: ignore

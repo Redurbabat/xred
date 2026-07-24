@@ -1,0 +1,21 @@
+// Android-App „Instagram Monitor“ – Projekt-Einstellungen.
+// Chaquopy bettet Python (Flask + Instaloader) direkt in die APK ein.
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+    plugins {
+        id 'com.android.application' version '8.5.2'
+        id 'com.chaquo.python' version '16.0.0'
+    }
+}
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+rootProject.name = 'InstagramMonitor'
+include ':app'

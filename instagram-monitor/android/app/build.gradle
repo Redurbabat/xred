@@ -1,0 +1,76 @@
+plugins {
+    id 'com.android.application'
+    id 'com.chaquo.python'
+}
+
+// Signatur-Material für stabile Updates (neue APK über die installierte App
+// drüberinstallieren), OHNE Schlüssel/Passwort im Repo:
+//   * Der Keystore liegt NICHT mehr im Repo. In GitHub Actions wird er aus dem
+//     Secret IGMON_KEYSTORE_B64 nach android/app/igmonitor.p12 geschrieben;
+//     lokal legt man eine eigene (nicht eingecheckte) Kopie an denselben Ort.
+//   * Passwörter/Alias kommen aus Umgebungsvariablen bzw. Gradle-Properties
+//     (in CI aus GitHub-Secrets), NICHT aus dem Quelltext.
+//   * Fehlt der Keystore oder ein Passwort, wird keine feste Signatur gesetzt →
+//     Gradle nutzt die Standard-Debug-Signatur, der Build läuft trotzdem durch.
+def cfg = { String k -> System.getenv(k) ?: project.findProperty(k) }
+def signingKeystore = file(cfg('IGMON_KEYSTORE_FILE') ?: 'igmonitor.p12')
+def signingStorePw = cfg('IGMON_STORE_PASSWORD')
+def signingKeyPw = cfg('IGMON_KEY_PASSWORD')
+def signingKeyAlias = cfg('IGMON_KEY_ALIAS') ?: 'igmonitor'
+def canSign = signingKeystore.exists() && signingStorePw && signingKeyPw
+
+android {
+    namespace 'de.redur.igmonitor'
+    compileSdk 34
+
+    // Signatur: Alle Werte kommen aus Umgebung/Secrets (Definition am
+    // Skriptanfang). Fehlt der Keystore oder ein Passwort, bleibt signingConfigs
+    // leer und Gradle nutzt die Standard-Debug-Signatur (Build läuft trotzdem).
+    signingConfigs {
+        if (canSign) {
+            fixed {
+                storeFile signingKeystore
+                storeType 'PKCS12'
+                storePassword signingStorePw
+                keyAlias signingKeyAlias
+                keyPassword signingKeyPw
+            }
+        }
+    }
+
+    defaultConfig {
+        applicationId 'de.redur.igmonitor'
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+        // Chaquopy mit Python 3.12 unterstützt nur 64-Bit-ABIs:
+        // arm64-v8a (praktisch alle Handys) + x86_64 (Intel-Tablets/Emulator).
+        ndk { abiFilters 'arm64-v8a', 'x86_64' }
+    }
+    buildTypes {
+        debug {
+            if (canSign) signingConfig signingConfigs.fixed
+        }
+        release {
+            if (canSign) signingConfig signingConfigs.fixed
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+chaquopy {
+    defaultConfig {
+        version '3.12'
+        pip {
+            install 'flask'
+            install 'instaloader'
+            install 'requests'
+        }
+    }
+    // Python-Quellen liegen in src/main/python; das app/-Paket der
+    // bestehenden Anwendung ist dort als Symlink eingebunden.
+}

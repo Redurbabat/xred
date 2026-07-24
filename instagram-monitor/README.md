@@ -1,0 +1,605 @@
+# Instagram Monitor
+
+Eine Desktop-Anwendung (Python 3.12 + CustomTkinter), die **öffentliche**
+Instagram-Konten überwacht, bei neuen Beiträgen und Reels benachrichtigt und
+neue Inhalte – sofern für das Konto aktiviert und zulässig – automatisch in
+einen lokalen Ordner herunterlädt.
+
+![Aufbau](https://img.shields.io/badge/Python-3.12-blue) ![GUI](https://img.shields.io/badge/GUI-CustomTkinter-informational)
+
+## Bildschirmfotos
+
+> Lege deine eigenen Screenshots im Ordner `docs/` ab und binde sie hier ein,
+> z. B. `![Gefolgt-Liste](docs/liste.png)`. (Bewusst keine Beispielbilder mit
+> erfundenen Konten – so entsteht kein falscher Eindruck echter Daten.)
+
+## Browser-Oberfläche: was sie kann
+
+Die Browser-Oberfläche (`python web.py`) ist der bequemste Weg. Highlights:
+
+- **Gefolgt & Follower sofort da** – beide Listen werden lokal
+  zwischengespeichert und erscheinen beim Öffnen ohne Wartezeit. Im
+  Hintergrund frischt die App sie in ruhigem Tempo auf (Standard: stündlich,
+  in den Einstellungen abschaltbar und mit optionaler Nachtpause).
+- **„Zuletzt gepostet“ + NEU-Markierung** je Konto, direkt aus der lokalen
+  Datenbank – plus 🔎-Knopf für eine gezielte Aktualisierung.
+- **Sofort-Filter, Sortierung** (letzter Beitrag, NEU zuerst, Name …),
+  **Favoriten** (⭐, immer oben), **Gruppen** (🏷) und **Story-Punkt** am Avatar.
+- **Rückfolge-Vergleich** („folgt dir nicht zurück“ / „du folgst nicht zurück“)
+  und **Verlauf** (wer neu dazukam / entfolgt ist).
+- **CSV-Export** der Listen, **Download-Fortschrittsbalken**, **Lightbox**,
+  **Skeleton-Ladeanzeige**, **Handy-Kachelraster**, **Dark/Hell-Umschalter**,
+  **als App installierbar** (PWA) und **Browser-Benachrichtigungen**.
+- **Schonend zu Instagram**: globaler Mindestabstand zwischen Anfragen,
+  zufällige Pausen und automatisches Zurückweichen bei Drosselung (429).
+- **Zuverlässig**: SQLite im WAL-Modus, **Datenbank-Backup** auf Knopfdruck,
+  Ansicht **fehlgeschlagener Downloads** mit „erneut versuchen“ und
+  Speicherplatz-Anzeige.
+
+## Funktionen (Desktop-App)
+
+- **Mehrere Konten überwachen** – Benutzernamen einzeln oder als Liste
+  (Komma-getrennt) hinzufügen.
+- **Benachrichtigung bei neuen Beiträgen/Reels** – im Log-Fenster und
+  (sofern verfügbar) als Desktop-Benachrichtigung.
+- **Automatischer Download pro Konto abschaltbar** – über einen Schalter in
+  der Kontenliste. Heruntergeladen wird nach `downloads/<benutzername>/Fotos/`
+  bzw. `.../Videos/` (nach Medientyp getrennt).
+- **Manueller Download** – der Knopf „⬇ Herunterladen“ pro Konto lädt die
+  neuesten *vorhandenen* Beiträge sofort herunter (Anzahl abfragbar),
+  unabhängig von der Überwachung.
+- **Optionale Anmeldung mit dem eigenen Konto** – über den offiziellen
+  Instaloader-Login (inkl. Zwei-Faktor-Authentifizierung). Reduziert die
+  Drosselung und ermöglicht den Zugriff auf Konten, denen du folgst. Das
+  Passwort wird **nicht** gespeichert.
+- **Keine Doppel-Downloads** – jeder Beitrag wird pro Konto in einer
+  SQLite-Datenbank registriert; fehlgeschlagene Downloads (z. B. wegen
+  Drosselung) bleiben vorgemerkt und werden bei den nächsten Prüfläufen
+  automatisch nachgeholt.
+- **Statusanzeige je Konto** – Zeitpunkt der letzten Prüfung, Anzahl der
+  heruntergeladenen Beiträge, letzter Fehler.
+- **Start/Stop** der Überwachung, **Sofortprüfung** und einstellbares
+  **Prüfintervall** (Standard: 5 Minuten, Minimum: 1 Minute).
+- **Persistenz** – Konten, bekannte Beiträge und Einstellungen überleben
+  einen Neustart (SQLite: `data/monitor.db`).
+- **Logging** – rotierende Log-Datei unter `logs/app.log` plus Live-Log in
+  der Oberfläche.
+
+## Wichtige Hinweise (bitte zuerst lesen)
+
+- Die Anwendung ruft **ausschließlich öffentlich sichtbare Inhalte** ab –
+  dasselbe, was ein nicht angemeldeter Besucher im Browser sieht. Als
+  Unterbau dient das dokumentierte Open-Source-Tool
+  [Instaloader](https://instaloader.github.io/).
+- **Private Profile werden übersprungen.** Die Anwendung umgeht keinerlei
+  Login-, Sicherheits- oder Zugriffsbeschränkungen von Instagram.
+- **Rate-Limits werden respektiert:** Das Prüfintervall ist nach unten auf
+  1 Minute begrenzt, zwischen den Konten liegen Pausen, pro Prüfung werden
+  nur die neuesten Beiträge betrachtet, und bei einer Drosselung durch
+  Instagram wartet die Anwendung einfach auf den nächsten regulären Lauf.
+- **Rechtliches:** Du bist selbst dafür verantwortlich, dass Überwachung und
+  Download im Einklang mit den
+  [Instagram-Nutzungsbedingungen](https://help.instagram.com/581066165581870)
+  und dem Urheberrecht stehen. Lade nur Inhalte herunter, für die du dazu
+  berechtigt bist (z. B. eigene Konten oder Inhalte mit ausdrücklicher
+  Erlaubnis), und nutze Downloads nur privat.
+- Instagram drosselt anonyme Abrufe zum Teil stark. Gelegentliche Meldungen
+  wie „Vorübergehender Fehler“ sind normal – die Anwendung versucht es beim
+  nächsten Prüflauf automatisch erneut.
+
+## Schnellstart (empfohlen)
+
+Voraussetzung ist nur ein installiertes **Python 3.12 oder neuer**
+(Download: https://www.python.org/downloads/ – im Windows-Installer den
+Haken **„Add python.exe to PATH“** setzen).
+
+Es gibt **zwei Oberflächen** für dieselben Daten:
+
+| | Windows | Linux/macOS |
+| --- | --- | --- |
+| **Browser-Oberfläche** (Beiträge ansehen & gezielt herunterladen, wie ein Feed) | Doppelklick **`start-web.bat`** | `./start-web.sh` |
+| **Desktop-App** (Dauer-Überwachung mit Benachrichtigungen) | Doppelklick **`start.bat`** | `./start.sh` |
+
+Das Skript erledigt beim ersten Start automatisch die komplette
+Einrichtung (virtuelle Umgebung anlegen, Abhängigkeiten installieren)
+und startet danach die Anwendung. Ab dem zweiten Start geht es direkt
+los. Bitte nicht beide Oberflächen gleichzeitig laufen lassen.
+
+### Browser-Oberfläche (Instagram-Stil)
+
+`start-web.bat` startet einen **lokalen** Server (nur auf deinem Rechner
+erreichbar, http://127.0.0.1:8756/) und öffnet den Browser. Die Oberfläche
+ist wie Instagram aufgebaut: obere Leiste mit Suche, **Stories-Reihe**
+(runde Ringe – antippen für den Story-Viewer), ein **Feed** deiner Abos,
+eine **Lightbox** (Vollbild, Album-Karussell, Videos), eine **Profil-
+Ansicht als 3-Spalten-Raster**, **Hell/Dunkel-Umschalter**, „Merken"
+(★) und Toast-Meldungen. Über das Zahnrad ⚙️ erreichst du „Verwalten"
+(Abo-Liste, Massen-Download, Feed-Einstellungen, Abmelden).
+
+**Navigation wie Instagram:** Unten (Handy) bzw. oben (PC) findest du
+**🏠 Feed · 🔍 Suche · 🎬 Reels · 🔖 Gespeichert · 👤 Profil**. Die
+**Suche** findet Konten nach Namen. Dein **Profil** (und jedes andere)
+zeigt Avatar, Name, Verifiziert-Haken, **Beiträge / Follower / Gefolgt**
+und Bio; bei deinem eigenen Profil sind **Follower** und **Gefolgt**
+anklickbar und zeigen die jeweilige Liste. **In der Suche stehen deine
+Gefolgt-/Follower-Listen sofort bereit** (aus dem lokalen Speicher, ohne
+Instagram-Abruf): Tippen filtert die Liste live, Konten lassen sich
+**anhaken** (Alle/Keine) und gesammelt **herunterladen**. **Nichts lädt
+im Hintergrund:** Die Instagram-Suche und **Entdecken** starten erst auf
+Knopfdruck (🔍 bzw. „Laden"), die Listen werden nur auf ↻ neu abgerufen.
+
+**Video-Qualität & Datensparmodus:** Downloads sowie die Vollbild- und
+Reels-Wiedergabe erfolgen **immer in Originalqualität** (die App streamt
+die Original-Datei direkt vom Instagram-CDN). Unter ⚙️ kannst du das
+**automatische Abspielen im Feed** ausschalten (Datensparmodus).
+
+**Ordner-Struktur (pro Konto getrennt):** Jeder Download landet pro Konto in
+eigenen Unterordnern – **Beiträge** nach Medientyp in `Fotos`/`Videos`,
+**Stories** und **Highlights (öne çıkanlar)** in jeweils eigenen Ordnern.
+Gemischte Alben werden pro Datei aufgeteilt. Beispiel:
+
+```
+<Download-Ordner>/
+  elif.erbeyy/
+    Fotos/        ← Beiträge: Bilder
+    Videos/       ← Beiträge: Videos & Reels
+    Story/        ← Stories (Bilder + Videos)
+    Highlights/   ← Highlights / öne çıkanlar (Bilder + Videos)
+```
+
+Die Dateinamen sind fest (aus dem Beitrags-Kürzel), sodass **Laptop und
+Tablet exakt dieselbe Ablage** erzeugen. Zeigt der Download-Ordner auf
+einen Cloud-Sync-Ordner (z. B. **TeraBox**), sammelt sich alles automatisch
+in derselben Struktur in der Cloud – ohne Doppelte.
+
+**Dashboard & Zurück-Knopf:** Beim Öffnen erscheint ein schwarzes
+**Dashboard** (es wird **nichts** automatisch von Instagram geladen):
+Kontoname eingeben → **„Profil laden"**, dazu Knöpfe für
+Gefolgt/Follower, Suche, Feed, **📊 Statistik** und 📥 Verlauf. Ein Klick
+auf das **„Instagram Monitor"**-Logo führt immer zum Dashboard zurück,
+der **←**-Knopf oben links eine Ansicht zurück.
+
+**📊 Statistik:** Zeigt je Konto, **wie viele Dateien** heruntergeladen
+wurden und **wie viel Speicher (GB/MB)** sie belegen – sortiert nach
+Größe, mit Gesamtsumme. Antippen öffnet das Profil.
+
+**Hintergrundfoto:** Jeden Tag wird ein **anderes** deiner bereits
+heruntergeladenen Fotos als Hintergrund gezeigt (abgedunkelt, damit alles
+lesbar bleibt). Unter ⚙️ lässt sich das **ein- und ausschalten**.
+
+**Status im Raster:** In Profil-/Raster-Ansichten ist jeder Beitrag oben
+links markiert – **grün ✓ = bereits heruntergeladen, rot = noch nicht**.
+
+**Konten auswählen & laden:** In der **Gefolgt**-Liste kannst du mehrere
+Konten **anhaken** (Alle/Keine) und mit einem Klick **je Konto N Beiträge
+auf den PC** laden (Fortschritt im Knopf). Follower/Gefolgt siehst du über
+dein Profil (Zähler antippen).
+
+**Mehrfachauswahl & Verlauf:** In Raster-Ansichten (Profil, Gespeichert)
+gibt es **„☑ Auswählen"** – mehrere Beiträge antippen und gesammelt
+**auf den PC** laden. Unter ⚙️ → **„📥 Verlauf"** siehst du alle bisher
+heruntergeladenen Beiträge (Konto, Typ, Zeit).
+
+**Kommentare & Entdecken:** In der Vollbild-Ansicht eines Beitrags zeigt
+**💬** die neuesten Kommentare. In der **Suche** findest du mit „#reisen"
+o. Ä. die neuesten Beiträge zu einem **Hashtag** (Entdecken), dazu
+Vorschlags-Chips und eine Liste **zuletzt angesehener** Profile.
+
+**Endlos-Scroll:** Der Feed lädt weitere Abos automatisch nach, sobald du
+nach unten scrollst (in Seiten, so bleibt es schnell). **Likes &
+Kommentare** werden je Beitrag angezeigt. **▶ Reels** öffnet einen
+Vollbild-Video-Feed (vertikal wischen, Tippen für Ton/Pause). Auf dem
+Handy: **nach unten ziehen aktualisiert** den Feed (Pull-to-Refresh).
+
+**Als App aufs Handy:** Die Seite ist eine PWA – im Browser-Menü des
+Handys „Zum Startbildschirm hinzufügen" wählen, dann startet sie wie eine
+echte App im Vollbild. Weitere Extras: **Filterleiste** (Fotos / Videos /
+Reels / Alben), **„🔖 Gespeichert"** (per ★ oder Doppeltipp gemerkte
+Beiträge, lokal), **Link kopieren**, **Bildunterschrift als .txt**
+mitspeichern (Verwalten), untere Navigationsleiste am Handy, und „?" für
+die Tastatur-Hilfe.
+
+**Automatischer Download (Zeitplan):** Unter ⚙️ „Verwalten" →
+„⏰ Automatischer Download" kannst du festlegen, dass die App **täglich zu
+bestimmten Uhrzeiten** (Standard **12:00** und **00:00**) automatisch die
+neuesten Beiträge aller deiner Abos auf den PC lädt. Uhrzeiten lassen sich
+beliebig hinzufügen/entfernen, und „Beiträge je Konto" ist einstellbar.
+Voraussetzung: Die App muss laufen (PC an, Browser-Server geöffnet) und du
+musst angemeldet sein. Bereits Geladenes wird nicht erneut heruntergeladen.
+Tipp: Für einen dauerhaften Betrieb `start-web-handy.bat` einfach laufen
+lassen – dann läuft der Zeitplan im Hintergrund weiter.
+
+1. Optional oben **anmelden**. Am zuverlässigsten ist **„Aus Browser
+   übernehmen“**: Melde dich einmal in deinem normalen Browser bei
+   instagram.com an, dann übernimmt die App diese Anmeldung – das
+   vermeidet den „Checkpoint“, den die direkte Passwort-Anmeldung von
+   einem neuen Gerät oft auslöst. Alternativ Benutzername + Passwort
+   (2FA wird unterstützt).
+2. **Start = schwarzes Dashboard:** Beim Öffnen erscheint das Dashboard –
+   **kein** automatischer Feed/Profil-Abruf. Von dort: **„Gefolgt /
+   Follower"** öffnet die Liste (oben umschaltbar), in der du Konten
+   **anhaken** kannst („Alle"/„Keine"), die Anzahl je Konto wählst (bis
+   „alle (max 30)") und mit **„⬇ Herunterladen (N)"** von allen
+   ausgewählten Konten gleichzeitig auf den PC lädst. **„Feed"** lädt den
+   Feed nur auf Knopfdruck; 🏠 bzw. das Logo führen zum Dashboard zurück.
+3. Einzelnes Konto: Benutzernamen oder Instagram-Link eingeben →
+   **Anzeigen**.
+4. Bei jedem Foto/Video gibt es **„⤓ Gerät“** und **„⬇ Auf PC“**;
+   bereits Heruntergeladenes ist grün markiert.
+
+**Stories & Highlights** (nur mit Anmeldung): Im Bereich „Beiträge
+ansehen" gibt es neben der Suche die Knöpfe **„⬇ Stories"** und
+**„⬇ Highlights"**. Gib einen Benutzernamen ein und klicke darauf – die
+aktuellen Stories bzw. die dauerhaften Highlights des Kontos werden in
+denselben Konto-Ordner `downloads/<konto>/` geladen wie Fotos und Videos. Ein Fortschritt
+wird angezeigt; bereits Geladenes wird übersprungen. Bei privaten Konten
+funktioniert das nur, wenn du dem Konto folgst.
+
+**Wenn du angemeldet bist**, erscheint zusätzlich der Bereich **„Meine
+Abonnements"**:
+
+- **„Liste laden"** zeigt alle Konten, denen du folgst – mit
+  **Profilbild, vollem Namen und @Name**. Über „Beiträge" siehst du die
+  Beiträge eines Kontos; das Suchfeld filtert die Liste.
+- **Auswählen:** Jede Zeile hat eine **Checkbox** (Standard: alle
+  ausgewählt). Mit „Alle auswählen"/„Keine" schnell umschalten.
+- **Datumsfilter:** Im Feld „nur Beiträge ab" ein Datum wählen – dann
+  werden nur Beiträge ab diesem Tag geladen (ältere übersprungen).
+- **„⬇ Ausgewählte auf PC laden"** lädt die neuesten Beiträge der
+  ausgewählten Konten in den PC-Ordner. „Beiträge je Konto" (1–12) legt
+  die Menge fest. Ein Fortschrittsbalken zeigt den Stand; „Abbrechen"
+  stoppt jederzeit.
+- **Kein Doppel-Download:** Bereits heruntergeladene Beiträge werden
+  automatisch übersprungen. Instagram drosselt große Mengen – die App
+  legt automatisch Pausen ein, daher kann es bei vielen Abos dauern.
+
+Bei jedem Beitrag gibt es zwei Download-Knöpfe:
+
+- **„⤓ Gerät"** – speichert die Datei direkt auf **dem Gerät, mit dem du
+  die Seite geöffnet hast** (z. B. dein Handy). Ideal unterwegs.
+- **„⬇ Auf PC"** – speichert in `downloads/<benutzername>/Fotos/` bzw.
+  `.../Videos/` (nach Medientyp) auf dem PC, auf dem die App läuft. Bereits
+  Gespeichertes ist grün.
+
+### Auf dem Handy öffnen (gleiches WLAN)
+
+Du kannst die Oberfläche vom Handy aus benutzen, während die App auf dem
+PC läuft. Handy und PC müssen im **selben WLAN** sein.
+
+1. Auf dem PC **`start-web-handy.bat`** (Windows) bzw. `./start-web-handy.sh`
+   starten. Beim ersten Mal fragt Windows nach der **Firewall-Freigabe**
+   → „Zugriff zulassen" (privates Netzwerk) wählen.
+2. Im PC-Fenster wird eine Adresse angezeigt, z. B.
+   `http://192.168.1.42:8756/?key=abcd1234`.
+3. **Diese komplette Adresse** (inkl. `?key=…`) auf dem Handy im Browser
+   öffnen – am einfachsten als Lesezeichen speichern. Der Code schützt
+   davor, dass andere im WLAN die Seite nutzen.
+
+Die eigentliche Verarbeitung läuft weiter auf dem PC (dessen Anmeldung
+und Internet-Verbindung werden genutzt); das Handy ist nur die Anzeige.
+Über **„⤓ Gerät"** landen Downloads direkt auf dem Handy.
+
+> Für Zugriff **von unterwegs** (Mobilfunk, außerhalb des WLANs) brauchst
+> du zusätzlich einen Tunnel-Dienst (z. B. Cloudflare Tunnel oder ngrok),
+> der die lokale Adresse `127.0.0.1:8756` nach außen verfügbar macht.
+> Eine echte Cloud-Hosting-Variante (Vercel o. ä.) ist ungeeignet, weil
+> Instagram Server-IPs stark drosselt und die Browser-Anmeldung dort
+> nicht verfügbar ist.
+
+Alle Oberflächen teilen sich denselben `downloads/`-Ordner, dieselbe
+Datenbank und dieselbe Anmeldung.
+
+### 📱 Als Android-App installieren
+
+Die Webseite ist eine **PWA** – sie lässt sich auf Android wie eine
+echte App installieren: eigenes Symbol auf dem Home-Bildschirm,
+Vollbild ohne Browser-Leiste, gleiche Bedienung.
+
+**Variante A – PC läuft im Hintergrund (einfachste):**
+
+1. Auf dem PC `start-web-handy.bat` starten.
+2. Die angezeigte Adresse (inkl. `?key=…`) auf dem Handy in **Chrome**
+   öffnen.
+3. Menü **⋮** → **„App installieren"** (bzw. „Zum Startbildschirm
+   hinzufügen") antippen. Fertig – „Instagram Monitor" liegt als App
+   auf dem Home-Bildschirm.
+
+**Variante B – komplett ohne PC (Termux):**
+
+1. Einmalig einrichten wie im Kapitel „Nur mit dem Handy" unten.
+2. Zusätzlich die kostenlose App **Termux:Widget** (F-Droid)
+   installieren und in Termux ausführen:
+   ```bash
+   cd projekt/instagram-monitor
+   chmod +x termux-start.sh
+   mkdir -p ~/.shortcuts
+   ln -sf "$PWD/termux-start.sh" ~/.shortcuts/InstagramMonitor
+   ```
+3. Das **Termux:Widget** auf den Home-Bildschirm legen →
+   **„InstagramMonitor" antippen** startet den Server und öffnet die
+   Seite automatisch. Dort einmal wie in Variante A als App
+   installieren – danach: ein Tipp aufs Widget, ein Tipp aufs
+   App-Symbol, fertig.
+
+**Variante C – echte APK, ganz ohne PC und ohne Termux:** 🆕
+
+Bei jeder Änderung baut GitHub automatisch eine **fertige APK**, in der
+der komplette Server (Python/Flask/Instaloader) **eingebettet** ist –
+die App läuft damit vollständig auf dem Handy:
+
+1. Auf dem Handy die **Releases-Seite** des Projekts öffnen:
+   `https://github.com/Redurbabat/Red/releases` → Release **„📱
+   Instagram Monitor – Android-App"** → `InstagramMonitor.apk`
+   herunterladen.
+2. Die Datei antippen → Installation aus unbekannten Quellen einmalig
+   erlauben → installieren.
+3. App öffnen (erster Start braucht ein paar Sekunden) → anmelden, am
+   besten per **sessionid** („Erweitert" im Anmelde-Feld).
+
+„⤓ Gerät"-Downloads landen im Download-Ordner des Handys; die
+„⬇ Auf PC"-Downloads, Statistik und das Hintergrundfoto nutzen den
+App-Speicher (`Android/data/de.redur.igmonitor/files/`). Der
+Projektordner `android/` enthält das zugehörige Android-Projekt
+(Chaquopy) – es lässt sich auch lokal mit Android Studio bauen.
+
+### iPhone: Herunterladen aufs Handy
+
+Auch auf dem **iPhone** funktioniert der Weg über das WLAN (oben):
+
+1. Auf dem PC `start-web-handy.bat` starten und die angezeigte Adresse
+   (inkl. `?key=…`) in **Safari** öffnen.
+2. Bei einem Foto/Video **„⤓ Gerät"** antippen – Safari lädt die Datei
+   herunter (Pfeil-Symbol oben). Sie liegt dann in der **Dateien-App**
+   unter „Downloads".
+3. Um ein Foto in die **Fotos-App** zu bekommen: In der Dateien-App das
+   Bild antippen → Teilen → **„Bild sichern"** (Videos: „Video sichern").
+   Alternativ in der Vollbild-Ansicht das Bild **gedrückt halten** →
+   „Zu Fotos hinzufügen".
+4. Tipp: Die Seite über „Zum Home-Bildschirm" hinzufügen – dann startet
+   sie wie eine App.
+
+Der Server selbst kann auf dem iPhone **nicht** laufen (iOS lässt keine
+frei laufenden Python-Server zu) – der PC muss also an sein. Ohne PC:
+siehe Android/Termux unten oder die Cloud-Variante direkt darunter.
+
+### ☁️ Automatisch in die Cloud (TeraBox / Google Fotos)
+
+Die App lädt direkt in einen **beliebigen Ordner** – wenn dieser Ordner
+von einer Cloud-App synchronisiert wird, landet **alles automatisch in
+der Cloud** und ist damit auch am iPhone/Handy jederzeit abrufbar:
+
+**TeraBox – gemeinsame Bibliothek für PC UND Tablet:**
+
+- **PC:** TeraBox-Desktop-App installieren → sie legt einen Sync-Ordner
+  an (z. B. `C:\Users\du\TeraBox`). In der Web-Oberfläche unter ⚙️ →
+  **„Ordner ändern"** z. B. `C:\Users\du\TeraBox\InstagramMonitor`
+  eintragen. Jeder Download (je Konto ein Unterordner) wird automatisch
+  hochgeladen.
+- **Tablet/Handy (Android-App):** Beim ersten Start fragt die App nach
+  dem **Dateizugriff** („Alle Dateien verwalten") – erlauben! Danach
+  speichert sie sichtbar unter **`Pictures/InstagramMonitor/<konto>/`**
+  (auch für die Galerie sichtbar). In der **TeraBox-App** dann:
+  Backup/Auto-Sicherung → Ordner hinzufügen →
+  `Pictures/InstagramMonitor` wählen. Ab dann lädt TeraBox alles von
+  dort automatisch hoch.
+- **Ergebnis:** In deiner TeraBox sammeln sich die Dateien **beider
+  Geräte** im gleichen Cloud-Ordner – pro Konto ein Unterordner, ohne
+  Doppelte (die App überspringt auf jedem Gerät bereits Geladenes; was
+  das jeweils andere Gerät geladen hat, siehst du in der TeraBox-App).
+
+**Google Fotos:** **„Google Drive für Desktop"** installieren → in dessen
+Einstellungen den gewünschten Ordner (z. B.
+`C:\Users\du\Bilder\InstagramMonitor`) zum Backup hinzufügen und dabei
+**„In Google Fotos sichern"** aktivieren. Diesen Ordner unter ⚙️ →
+„Ordner ändern" als Download-Ordner setzen. Alle Fotos/Videos erscheinen
+dann automatisch in Google Fotos (auch in der iPhone-App).
+
+Ein direkter Upload über die TeraBox-/Google-Fotos-API ist absichtlich
+nicht eingebaut: TeraBox hat keine offizielle öffentliche API, und die
+Google-Fotos-API bräuchte eine eigene, komplizierte OAuth-Einrichtung –
+der Sync-Ordner-Weg ist zuverlässiger und ohne Zusatzkonfiguration.
+
+### Nur mit dem Handy – ganz ohne PC (Android/Termux)
+
+Die App ist ein kleiner Python-Server – der kann auch **direkt auf dem
+Handy** laufen, dann landen die Downloads im Handy-Speicher:
+
+1. **Termux** installieren (kostenlos, am besten aus
+   [F-Droid](https://f-droid.org/packages/com.termux/); die Play-Store-
+   Version ist veraltet).
+2. In Termux einmalig einrichten:
+   ```bash
+   pkg update && pkg install python git
+   termux-setup-storage        # Zugriff auf den Handy-Speicher erlauben
+   git clone <URL-dieses-Projekts> projekt
+   cd projekt/instagram-monitor   # der Ordner, der web.py enthält
+   pip install flask instaloader plyer
+   ```
+   (`customtkinter`/`browser_cookie3` sind auf dem Handy nicht nötig –
+   angemeldet wird per **sessionid**, siehe „Erweitert" im Anmelde-Feld.)
+3. Starten und im Handy-Browser öffnen:
+   ```bash
+   python web.py
+   # dann im Browser: http://127.0.0.1:8756/
+   ```
+4. Damit die Fotos in der Handy-Galerie auftauchen, den Download-Ordner
+   in den freigegebenen Speicher legen (die Einstellung wird gespeichert):
+   ```bash
+   python web.py --downloads ~/storage/shared/Pictures/InstagramMonitor
+   ```
+
+Termux muss dabei geöffnet bleiben (Android beendet Hintergrund-Apps
+sonst irgendwann). Auf dem **iPhone** gibt es keine vergleichbare
+Möglichkeit, Python-Server frei laufen zu lassen – dort bleibt der Weg
+über den PC im selben WLAN (oben).
+
+## Manuelle Installation
+
+Voraussetzung: **Python 3.12** (inkl. Tkinter, das bei den offiziellen
+Installern von python.org enthalten ist).
+
+```bash
+# 1. In den Projektordner wechseln
+cd instagram-monitor
+
+# 2. Virtuelle Umgebung anlegen und aktivieren
+python3.12 -m venv .venv
+
+#    Linux/macOS:
+source .venv/bin/activate
+#    Windows (PowerShell):
+#    .venv\Scripts\Activate.ps1
+#    Windows (cmd):
+#    .venv\Scripts\activate.bat
+
+# 3. Abhängigkeiten installieren
+pip install -r requirements.txt
+
+# 4. Anwendung starten
+python main.py
+```
+
+**Hinweis für Linux:** Falls Tkinter fehlt (`ModuleNotFoundError: No module
+named 'tkinter'`), zuerst das Systempaket installieren, z. B.
+`sudo apt install python3-tk` (Debian/Ubuntu) oder
+`sudo dnf install python3-tkinter` (Fedora).
+
+## Bedienung
+
+1. **Konto hinzufügen:** Benutzernamen oben eingeben (mehrere mit Komma
+   trennen) und auf „Hinzufügen“ klicken.
+2. **Download aktivieren (optional):** In der Kontenliste den Schalter
+   „Automatisch herunterladen“ umlegen.
+3. **Überwachung starten:** Rechts auf „▶ Überwachung starten“ klicken.
+   Der Status in der Kopfzeile wechselt auf „Überwachung läuft“.
+4. **Prüfintervall ändern:** Minutenzahl eintragen und „Intervall
+   übernehmen“ klicken. Die Änderung wirkt sofort auf die laufende
+   Wartezeit; eine zusätzliche Prüfung wird dadurch **nicht** ausgelöst.
+5. **Sofort prüfen:** „↻ Jetzt prüfen“ stößt außerplanmäßig einen Lauf an.
+6. **Download-Ordner ändern:** über „Ordner wählen …“.
+
+**Erstinventur:** Beim ersten Prüflauf eines neu hinzugefügten Kontos werden
+die bereits vorhandenen Beiträge nur registriert (Baseline) – sie werden
+weder gemeldet noch heruntergeladen. Erst ab dem zweiten Lauf gilt jeder
+unbekannte Beitrag als „neu“. So wird verhindert, dass beim Hinzufügen eines
+Kontos dessen gesamter Verlauf heruntergeladen wird.
+
+**Vorhandene Beiträge herunterladen:** Weil die automatische Überwachung nur
+*neue* Beiträge lädt, gibt es für bereits vorhandene Inhalte den Knopf
+**„⬇ Herunterladen“** in jeder Kontozeile. Er fragt, wie viele der neuesten
+Beiträge geladen werden sollen, und speichert sie sofort nach
+`downloads/<benutzername>/`. Bereits vorhandene Dateien werden übersprungen.
+
+### Anmeldung mit dem eigenen Konto (optional)
+
+Ohne Anmeldung greift die App nur auf **öffentliche** Profile zu. Meldest du
+dich mit deinem eigenen Instagram-Konto an (Abschnitt „Anmeldung“ rechts),
+
+- werden anonyme Abrufe deutlich seltener gedrosselt, und
+- kannst du auf **private** Konten zugreifen, **denen du folgst**.
+
+Die Anmeldung nutzt den offiziellen, dokumentierten Instaloader-Login. Bei
+aktivierter Zwei-Faktor-Authentifizierung fragt die App den Bestätigungscode
+ab. Es werden **keine Schutzmechanismen umgangen**: Auf private Konten, denen
+du nicht folgst, besteht weiterhin kein Zugriff. Dein **Passwort wird nicht
+gespeichert** – Instaloader legt nur eine Cookie-Session-Datei unter
+`data/sessions/` ab, sodass du beim nächsten Start angemeldet bleibst.
+Melde dich nur mit deinem eigenen Konto an und lade ausschließlich Inhalte
+herunter, zu denen du berechtigt bist.
+
+## Projektstruktur
+
+```
+instagram-monitor/
+├── main.py               # Einstiegspunkt Desktop-App
+├── web.py                # Einstiegspunkt Browser-Oberfläche (--handy = WLAN)
+├── start.bat / start.sh                  # Doppelklick-Start Desktop-App
+├── start-web.bat / start-web.sh          # Browser-Oberfläche (nur dieser PC)
+├── start-web-handy.bat / start-web-handy.sh  # Browser-Oberfläche im WLAN (Handy)
+├── requirements.txt      # Abhängigkeiten
+├── README.md             # diese Datei
+├── pyproject.toml        # Werkzeug-Konfiguration (ruff, pytest, pyright)
+├── tests/                # pytest-Tests (Datenbank, Einstellungen, Bremse …)
+├── app/
+│   ├── __init__.py
+│   ├── gui.py            # CustomTkinter-Oberfläche (nur Haupt-Thread)
+│   ├── web.py            # Flask-Endpunkte der Browser-Oberfläche
+│   ├── templates/
+│   │   └── index.html    # HTML-Gerüst der Browser-Oberfläche
+│   ├── static/
+│   │   ├── app.css       # Styles der Oberfläche (aus index.html ausgelagert)
+│   │   └── app.js        # gesamte Oberflächen-Logik (aus index.html ausgelagert)
+│   ├── database.py       # SQLite-Persistenz (thread-sicher via Lock, WAL)
+│   ├── downloader.py     # Instaloader-Zugriff, Login, Anfragen-Bremse
+│   ├── social_cache.py   # Hintergrund-Auffrischung Gefolgt/Follower + Avatare
+│   ├── monitor.py        # Hintergrund-Thread für die Überwachung
+│   ├── settings.py       # Einstellungsverwaltung (persistiert in SQLite)
+│   ├── notifier.py       # Desktop-Benachrichtigungen (optional, plyer)
+│   ├── util.py           # geteilte Eingabe-Normalisierung
+│   └── logging_setup.py  # Logging: Datei + Konsole + GUI-Fenster
+├── data/                 # monitor.db, sessions/, cache/, backups/ (automatisch)
+├── logs/                 # app.log, web.log (rotierend)
+└── downloads/            # Standard-Zielordner für Downloads
+```
+
+## Aktualisieren (Ein-Klick)
+
+Neue Version holen **ohne etwas zu kopieren**: einfach **`update.bat`**
+(Windows) bzw. **`./update.sh`** (Linux/macOS) im Ordner `instagram-monitor`
+per Doppelklick starten. Es lädt die neueste Version von GitHub und ersetzt
+nur die Programmdateien – deine Anmeldung und Einstellungen (`data/`), sowie
+`downloads/` und `logs/` bleiben unangetastet. Danach wie gewohnt
+`start-web-handy.bat` starten.
+
+## Für Entwickler
+
+- **Anderer Port:** `python web.py` nutzt Port 8756. Ist der belegt, setze
+  die Umgebungsvariable `IGMON_PORT`, z. B. (Windows PowerShell)
+  `$env:IGMON_PORT=9000; python web.py`.
+- **Fester Zugangscode (Handy-Modus):** Im `--handy`-Modus bleibt der
+  `?key=…`-Code über Neustarts **gleich** (gespeichert in
+  `data/access_key.txt`), sodass ein Handy-Lesezeichen dauerhaft
+  funktioniert. Einen **eigenen** Code kann man per Umgebungsvariable
+  `IGMON_KEY` vorgeben (z. B. `$env:IGMON_KEY="mein-code"; python web.py --handy`).
+- **Tests:** `pip install pytest && python -m pytest` (im Ordner
+  `instagram-monitor/`). Prüft Datenbank-, Einstellungs- und Bremsen-Logik
+  ohne Instagram-Zugriff.
+- **Linting:** `pip install ruff && ruff check .` – Konfiguration in
+  `pyproject.toml`.
+- **CI:** Bei jedem Push/Pull-Request laufen Ruff und die Tests automatisch
+  über GitHub Actions (`.github/workflows/ci.yml`).
+
+## Architektur in Kürze
+
+- **GUI (Haupt-Thread):** Alle Tkinter-Widgets werden ausschließlich im
+  Haupt-Thread angefasst.
+- **Monitor (ein langlebiger Hintergrund-Thread):** wird per An/Aus-Signal
+  geschaltet (kein Thread-Neustart bei Start/Stop) und kommuniziert mit
+  der GUI **nur** über eine thread-sichere `queue.Queue` (die GUI liest
+  sie zyklisch per `after()` aus). Beim Beenden der App wird die
+  Datenbank erst geschlossen, nachdem der Thread wirklich beendet ist.
+- **Datenbank:** eine SQLite-Verbindung, serialisiert über ein
+  `threading.Lock` – einfach und robust bei der geringen Zugriffsfrequenz.
+  Beiträge werden pro Konto geführt (Collab-Beiträge erscheinen unter
+  demselben Shortcode auf mehreren Profilen und werden für jedes
+  überwachte Konto einzeln gemeldet).
+- **Stoppen ohne Warten:** Die Wartephase reagiert sekündlich auf „Stop“,
+  „Jetzt prüfen“ und Intervalländerungen.
+- **Ausstehende Downloads:** Schlägt ein gewünschter Download fehl, bleibt
+  er als „ausstehend“ markiert und wird zu Beginn der nächsten Prüfläufe
+  automatisch nachgeholt.
+
+## Fehlerbehebung
+
+| Symptom | Ursache / Lösung |
+| --- | --- |
+| „Profil ist privat“ | Gewolltes Verhalten: private Profile werden nicht abgerufen. |
+| „Profil nicht gefunden“ | Erscheint nur, wenn die Instagram-Suche funktioniert und den Namen trotzdem nicht kennt → Tippfehler? Konto entfernen und korrekt neu anlegen. |
+| „Instagram beantwortet anonyme Profil-Abfragen derzeit nicht“ | Instagram drosselt anonyme Clients (sehr häufig). Kein Handlungsbedarf: Die App versucht es beim nächsten Prüflauf automatisch erneut; ggf. Prüfintervall erhöhen. Tipp: anmelden reduziert die Drosselung deutlich. |
+| „Checkpoint required“ bei der Anmeldung | Instagram verlangt eine Sicherheitsbestätigung, weil die Anmeldung von einem neuen Gerät kommt. Melde dich in deinem normalen Browser bei instagram.com an (bestätige dort ggf. die Abfrage) und nutze **„Aus Browser übernehmen“** – dann wird deine bereits bestätigte Anmeldung verwendet, ohne erneuten Checkpoint. |
+| „Keine aktive Instagram-Anmeldung im Browser gefunden“ | Du bist in keinem Desktop-Browser bei instagram.com eingeloggt, oder Chrome/Edge verschlüsselt die Cookies unlesbar. Lösung 1: in **Firefox** bei instagram.com anmelden, Firefox einmal schließen, dann erneut „Aus Browser übernehmen“. Lösung 2 (klappt immer): unter **„Erweitert: Anmeldung per sessionid“** den `sessionid`-Cookie-Wert einfügen (Browser → F12 → Anwendung/Application → Cookies → instagram.com → `sessionid`). |
+| „Vorübergehender Fehler“ | Netzwerkproblem oder Drosselung durch Instagram – die App versucht es beim nächsten Lauf erneut. Ggf. Prüfintervall erhöhen. |
+| Keine Desktop-Benachrichtigungen | `plyer` fehlt oder das System hat keinen Benachrichtigungsdienst; Meldungen erscheinen weiterhin im Log. |
+| GUI startet nicht (`tkinter` fehlt) | Tkinter-Systempaket installieren (siehe Installation). |
+
+Ausführliche Diagnose: `logs/app.log`.

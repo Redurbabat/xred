@@ -1,0 +1,25 @@
+# Laufzeitdaten der Anwendung – gehören nicht ins Repository
+data/
+logs/
+downloads/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Android-Build (lokal mit Android Studio)
+android/.gradle/
+android/local.properties
+android/app/build/
+android/build/
+
+# Signatur-Keystore gehört NICHT ins Repo (kommt in CI aus einem GitHub-Secret,
+# lokal als eigene, nicht eingecheckte Kopie).
+android/app/*.p12
+android/app/*.jks
+android/keystore.properties
+
+# Persönliche Start-Listen (bewusst NICHT im öffentlichen Repo)
+app/seed_lists.json
