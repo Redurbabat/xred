@@ -50,6 +50,16 @@ jobs:
           echo "$IGMON_KEYSTORE_B64" | base64 -d > app/igmonitor.p12
           echo "Keystore aus Secret geschrieben ($(wc -c < app/igmonitor.p12) Bytes)."
 
+      # Damit sich Updates OHNE Deinstallieren über die alte App installieren:
+      # denselben Debug-Signaturschlüssel über ALLE Builds hinweg verwenden.
+      # Er wird beim ersten Bau erzeugt und danach aus dem Cache wiederverwendet
+      # (gleicher Schlüssel -> gleiche Signatur -> nahtloses Update).
+      - name: Debug-Signaturschlüssel über Builds hinweg stabil halten
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: android-debug-keystore-v1
+
       - name: APK bauen
         working-directory: instagram-monitor/android
         run: gradle --no-daemon assembleDebug
