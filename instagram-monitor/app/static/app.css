@@ -102,6 +102,9 @@
   .pf-stats b{display:block; font-size:16px}
   .pf-stats .s{color:var(--muted); font-size:13px; text-align:center; cursor:default}
   .pf-stats .s.link{cursor:pointer}
+  /* Gelbe Zeile: wie viele Dateien je Typ schon geladen sind */
+  .pf-files{margin-top:8px; font-size:13px; color:var(--muted);
+        border-top:1px solid var(--border); padding-top:8px}
   .pf-bio{margin-top:8px; font-size:13.5px; white-space:pre-wrap}
   .pf-actions{display:flex; gap:8px; margin-top:12px; flex-wrap:wrap}
   .acctrow{display:flex; align-items:center; gap:12px; padding:8px 6px; cursor:pointer; border-radius:10px}

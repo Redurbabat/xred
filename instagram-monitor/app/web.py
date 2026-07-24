@@ -398,11 +398,40 @@ def create_app(
             )
         return None
 
+    # Auf der Platte vorhandene Beiträge erkennen (nicht nur laut Datenbank):
+    # Nach einer App-Neuinstallation ist die Datenbank leer, die Dateien
+    # liegen aber weiter unter Pictures/InstagramMonitor/<konto>/… – sonst
+    # würden bereits geladene Beiträge fälschlich als „nicht geladen" (rot)
+    # angezeigt. Der Dateiname beginnt mit dem Shortcode (z. B. „ABC_1.jpg").
+    _disk_cache: dict[str, tuple[float, set[str]]] = {}
+    _disk_cache_lock = threading.Lock()
+
+    def _disk_shortcodes(username: str) -> set[str]:
+        now = time.time()
+        with _disk_cache_lock:
+            hit = _disk_cache.get(username)
+            if hit and hit[0] > now:
+                return hit[1]
+        found: set[str] = set()
+        try:
+            root = settings.download_dir / username
+            if root.is_dir():
+                for f in root.rglob("*"):
+                    if f.is_file():
+                        found.add(re.split(r"[._]", f.name, maxsplit=1)[0])
+        except Exception:
+            pass
+        with _disk_cache_lock:
+            _disk_cache[username] = (now + 30.0, found)   # 30 s zwischenspeichern
+        return found
+
     def post_json(post: PostInfo, username: str) -> dict:
         """Serialisiert einen Beitrag für die Oberfläche (Feed & Einzelansicht)."""
         ptype = post.post_type or ""
         is_video = ("Video" in ptype) or ("Reel" in ptype)
         is_album = ptype.startswith("Album")
+        downloaded = (db.is_downloaded(post.shortcode, username)
+                      or post.shortcode in _disk_shortcodes(username))
         return {
             "shortcode": post.shortcode,
             "username": username,
@@ -418,7 +447,7 @@ def create_app(
             "thumb": f"/thumb/{post.shortcode}" if post.thumbnail_url else "",
             # Direkter Geräte-Download (streamt an Handy/Browser).
             "media": f"/media/{post.shortcode}",
-            "downloaded": db.is_downloaded(post.shortcode, username),
+            "downloaded": downloaded,
         }
 
     # ------------------------------------------------------------------
@@ -738,6 +767,34 @@ def create_app(
         info["avatar"] = _avatar_url(info)
         info.pop("pic", None)
         return jsonify(info)
+
+    @app.get("/api/account-files/<username>")
+    def account_files(username: str):
+        """Wie viele Dateien von diesem Konto bereits lokal liegen – nach Typ
+        getrennt (Fotos/Videos/Story/Highlights), für die Profil-Anzeige.
+        Zählt direkt die Dateien auf der Platte (überlebt App-Neuinstallation)."""
+        uname = extract_username(username)
+        if not uname:
+            return jsonify(error="Ungültiger Benutzername."), 400
+        # Ordnernamen wie im Downloader (_PHOTO_SUBDIR usw.).
+        counts = {"Fotos": 0, "Videos": 0, "Story": 0, "Highlights": 0}
+        total_bytes = 0
+        try:
+            root = settings.download_dir / uname
+            for sub in counts:
+                d = root / sub
+                if d.is_dir():
+                    for f in d.rglob("*"):
+                        if f.is_file():
+                            counts[sub] += 1
+                            try:
+                                total_bytes += f.stat().st_size
+                            except OSError:
+                                pass
+        except Exception:
+            pass
+        return jsonify(username=uname, counts=counts,
+                       total=sum(counts.values()), bytes=total_bytes)
 
     @app.get("/api/followers")
     def api_followers():

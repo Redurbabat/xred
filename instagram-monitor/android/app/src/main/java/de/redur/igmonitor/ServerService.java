@@ -81,18 +81,22 @@ public class ServerService extends Service {
                     CHANNEL_ID, "Instagram Monitor",
                     NotificationManager.IMPORTANCE_LOW);
             channel.setShowBadge(false);
-            channel.setDescription("Haelt Downloads im Hintergrund am Laufen.");
+            channel.setDescription("Haelt die App im Hintergrund aktiv.");
             nm.createNotificationChannel(channel);
         }
 
+        // Neutraler Text: Der Dienst laeuft DAUERHAFT (damit die App im
+        // Hintergrund erreichbar bleibt) – NICHT nur waehrend eines Downloads.
+        // Frueher stand hier „Downloads laufen…", was faelschlich einen
+        // laufenden Download suggerierte, obwohl gerade keiner lief.
         Notification.Builder builder =
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                         ? new Notification.Builder(this, CHANNEL_ID)
                         : new Notification.Builder(this);
         Notification notification = builder
-                .setContentTitle("Instagram Monitor laeuft")
-                .setContentText("Downloads laufen im Hintergrund weiter.")
-                .setSmallIcon(android.R.drawable.stat_sys_download)
+                .setContentTitle("Instagram Monitor aktiv")
+                .setContentText("Laeuft im Hintergrund – zum Oeffnen tippen.")
+                .setSmallIcon(android.R.drawable.stat_notify_sync)
                 .setOngoing(true)
                 .build();
 
