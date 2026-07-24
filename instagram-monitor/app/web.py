@@ -768,6 +768,34 @@ def create_app(
         info.pop("pic", None)
         return jsonify(info)
 
+    @app.get("/api/account-files/<username>")
+    def account_files(username: str):
+        """Wie viele Dateien von diesem Konto bereits lokal liegen – nach Typ
+        getrennt (Fotos/Videos/Story/Highlights), für die Profil-Anzeige.
+        Zählt direkt die Dateien auf der Platte (überlebt App-Neuinstallation)."""
+        uname = extract_username(username)
+        if not uname:
+            return jsonify(error="Ungültiger Benutzername."), 400
+        # Ordnernamen wie im Downloader (_PHOTO_SUBDIR usw.).
+        counts = {"Fotos": 0, "Videos": 0, "Story": 0, "Highlights": 0}
+        total_bytes = 0
+        try:
+            root = settings.download_dir / uname
+            for sub in counts:
+                d = root / sub
+                if d.is_dir():
+                    for f in d.rglob("*"):
+                        if f.is_file():
+                            counts[sub] += 1
+                            try:
+                                total_bytes += f.stat().st_size
+                            except OSError:
+                                pass
+        except Exception:
+            pass
+        return jsonify(username=uname, counts=counts,
+                       total=sum(counts.values()), bytes=total_bytes)
+
     @app.get("/api/followers")
     def api_followers():
         # Standard: der lokale Zwischenspeicher; ?fresh=1 erzwingt Live-Abruf.

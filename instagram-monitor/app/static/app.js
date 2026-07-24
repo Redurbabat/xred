@@ -899,11 +899,22 @@ function renderProfileHeader(info){
         <div class="s ${isOwn?'link':''}" id="pf_following"><b>${fmt(info.following)}</b>Gefolgt</div>
       </div>
       ${info.biography?`<div class="pf-bio">${linkify(info.biography)}</div>`:''}
-      <div class="pf-actions" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn ghost small" id="pf_dl" title="Alle Beiträge, Videos, Stories & Highlights dieses Kontos laden">⬇ Konto laden</button>
+      <div class="pf-actions" style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn ghost small" id="pf_dl_fotos">⬇ Fotos</button>
+        <button class="btn ghost small" id="pf_dl_videos">⬇ Videos</button>
+        <button class="btn ghost small" id="pf_dl_story">⬇ Story</button>
+        <button class="btn ghost small" id="pf_dl_high">⬇ Highlights</button>
+        <button class="btn ghost small" id="pf_dl_all" title="Alles: Beiträge, Videos, Stories & Highlights">⬇ Alles</button>
       </div>
+      <div class="pf-files" id="pf_files">📥 lädt Zähler …</div>
     </div>`;
-  const dl=$("pf_dl"); if(dl) dl.onclick=()=>downloadAccount(info.username);
+  const u=info.username;
+  $("pf_dl_fotos").onclick=()=>downloadAccountType(u,"photos");
+  $("pf_dl_videos").onclick=()=>downloadAccountType(u,"videos");
+  $("pf_dl_story").onclick=()=>downloadStoryKind(u,"stories");
+  $("pf_dl_high").onclick=()=>downloadStoryKind(u,"highlights");
+  $("pf_dl_all").onclick=()=>downloadAccount(u);
+  loadAccountFiles(u);
   if(isOwn){ const f1=$("pf_followers"), f2=$("pf_following");
     if(f1) f1.onclick=showFollowers; if(f2) f2.onclick=showFollowing; }
   else pushRecent({username:info.username, full_name:info.full_name, avatar:info.avatar});
@@ -1206,6 +1217,49 @@ async function downloadAccount(username){
   toast("Download von @"+username+" gestartet …","ok");
   showDlBar("@"+username+" wird geladen …", 0, 1);
   startDlBarPolling();
+}
+// Nur EIN Medientyp eines Kontos (Fotos bzw. Videos) laden.
+async function downloadAccountType(username, types){
+  username=(username||"").trim().replace(/^@/,""); if(!username) return;
+  const label={photos:"Fotos", videos:"Videos/Reels"}[types]||types;
+  if(!confirm("„"+label+"“ von @"+username+" laden?\nLäuft im Hintergrund weiter.")) return;
+  const {data}=await api("/api/download-following",{method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({usernames:[username], count:50, types})});
+  if(data.error){ toast(data.error,"err"); return; }
+  toast(label+" von @"+username+" – Download gestartet …","ok");
+  showDlBar("@"+username+" · "+label+" …", 0, 1);
+  startDlBarPolling();
+}
+// Story bzw. Highlights eines Kontos laden (eigener Endpunkt).
+async function downloadStoryKind(username, kind){
+  username=(username||"").trim().replace(/^@/,""); if(!username) return;
+  const label=kind==="highlights"?"Highlights":"Story";
+  if(!confirm(label+" von @"+username+" laden?\nLäuft im Hintergrund weiter.")) return;
+  const {data}=await api("/api/download-stories",{method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({username, kind})});
+  if(data.error){ toast(data.error,"err"); return; }
+  if(data.total===0){ toast("Keine "+label+" vorhanden.","ok"); return; }
+  toast(label+" von @"+username+" – Download gestartet …","ok");
+  showDlBar("@"+username+" · "+label+" …", 0, 1);
+  startDlBarPolling();
+}
+// Gelbe Zeile im Profil: wie viele Dateien je Typ schon lokal liegen.
+async function loadAccountFiles(username){
+  const box=$("pf_files"); if(!box) return;
+  const {data}=await api("/api/account-files/"+encodeURIComponent(username));
+  if(!$("pf_files")) return;
+  if(!data || data.error){ box.textContent=""; return; }
+  const c=data.counts||{};
+  const parts=[];
+  if(c.Fotos)      parts.push(c.Fotos+" Fotos");
+  if(c.Videos)     parts.push(c.Videos+" Videos");
+  if(c.Story)      parts.push(c.Story+" Story");
+  if(c.Highlights) parts.push(c.Highlights+" Highlights");
+  box.textContent = data.total
+    ? ("📥 Geladen: "+parts.join(" · ")+"  ("+fmtBytes(data.bytes)+")")
+    : "📥 Von diesem Konto ist noch nichts geladen.";
 }
 /* ---------- Live-Ansicht: „Was wird gerade geladen?" ---------- */
 // Der obere Fortschrittsbalken ist antippbar und öffnet diese Ansicht: sie
