@@ -21,5 +21,7 @@ android/app/*.p12
 android/app/*.jks
 android/keystore.properties
 
-# Persönliche Start-Listen (bewusst NICHT im öffentlichen Repo)
-app/seed_lists.json
+# Persönliche Start-Listen: In diesem PRIVATEN Repo bewusst mit eingecheckt
+# (nur Benutzernamen der eigenen Gefolgt-/Follower-Liste), damit sie nach
+# jeder App-Installation sofort da sind. In einem öffentlichen Repo hätte
+# diese Datei nichts zu suchen.
