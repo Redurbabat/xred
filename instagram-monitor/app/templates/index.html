@@ -44,7 +44,8 @@
 <!-- Fortschrittsbalken für laufende Downloads -->
 <div id="dlbar" style="display:none;padding:6px 14px;background:var(--bg2);font-size:13px">
   <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-    <span id="dlbar_text">Download …</span>
+    <span id="dlbar_text" onclick="showDownloadsLive()" style="cursor:pointer;flex:1"
+          title="Antippen: Was wird gerade geladen?">Download …</span>
     <button class="btn ghost small" onclick="cancelBulkAll()">Abbrechen</button>
   </div>
   <div style="height:6px;border-radius:4px;background:var(--border);margin-top:5px;overflow:hidden">

@@ -159,6 +159,9 @@ class _BulkJob:
         self.downloaded = 0     # gespeicherte Beiträge gesamt
         self.finished = False
         self.error = ""
+        # Warteschlange je Konto, damit die Oberfläche zeigen kann, WAS
+        # gerade läuft: [{"name", "state": "pending|active|done", "n"}].
+        self.items = []
 
     def try_start(self, total: int = 0, current: str = "") -> bool:
         """Startet den Job ATOMAR: prüft „läuft schon?" und setzt „läuft"
@@ -184,12 +187,28 @@ class _BulkJob:
                 "downloaded": self.downloaded,
                 "finished": self.finished,
                 "error": self.error,
+                "items": [dict(it) for it in self.items],
             }
 
     def update(self, **kwargs) -> None:
         with self._lock:
             for key, value in kwargs.items():
                 setattr(self, key, value)
+
+    def set_items(self, names: list[str]) -> None:
+        """Legt die Warteschlange an (ein Eintrag je Konto)."""
+        with self._lock:
+            self.items = [{"name": n, "state": "pending", "n": 0} for n in names]
+
+    def mark_item(self, index: int, state: Optional[str] = None,
+                  n: Optional[int] = None) -> None:
+        """Setzt Zustand/Zähler eines Eintrags (thread-sicher)."""
+        with self._lock:
+            if 0 <= index < len(self.items):
+                if state is not None:
+                    self.items[index]["state"] = state
+                if n is not None:
+                    self.items[index]["n"] = n
 
 
 def create_app(
@@ -748,10 +767,44 @@ def create_app(
             results = downloader.search_profiles(query, limit=12)
         except DownloaderError as exc:
             return jsonify(error=str(exc)), 502
+        # Für die Knöpfe am Treffer: steht das Konto schon in „Gefolgt"
+        # (lokale Liste) bzw. ist es angepinnt (⭐)?
+        try:
+            following_set = {a["username"] for a in _cached_social("following")[0]}
+        except Exception:
+            following_set = set()
         return jsonify(results=[{
             "username": d["username"], "full_name": d.get("full_name", ""),
             "is_verified": d.get("is_verified", False), "avatar": _avatar_url(d),
+            "following": d["username"] in following_set,
+            "favorite": db.is_favorite(d["username"]),
         } for d in results])
+
+    @app.post("/api/following/add")
+    def following_add():
+        """Ein Konto zur lokalen „Gefolgt"-Liste hinzufügen (z. B. aus der
+        Suche). Kein echter Instagram-Follow – nur die App-eigene Liste, damit
+        das Konto im Feed erscheint und ladbar ist."""
+        data = request.get_json(force=True, silent=True) or {}
+        username = extract_username(str(data.get("username", "")))
+        if not username:
+            return jsonify(error="Ungültiger Benutzername."), 400
+        db.add_social_account("following", {
+            "username": username,
+            "full_name": str(data.get("full_name", "")),
+            "pic": avatar_urls.get(username, ""),
+        })
+        return jsonify(ok=True)
+
+    @app.post("/api/following/remove")
+    def following_remove():
+        """Ein Konto aus der lokalen „Gefolgt"-Liste entfernen."""
+        data = request.get_json(force=True, silent=True) or {}
+        username = extract_username(str(data.get("username", "")))
+        if not username:
+            return jsonify(error="Ungültiger Benutzername."), 400
+        db.remove_social_account("following", username)
+        return jsonify(ok=True)
 
     @app.get("/avatar/<username>")
     def avatar(username: str):
@@ -798,6 +851,8 @@ def create_app(
         # Atomar starten: verhindert doppelte Worker bei Zeitplan+Klick.
         if not bulk.try_start(total=len(usernames)):
             return False
+        # Warteschlange für die Live-Ansicht („Was wird gerade geladen?").
+        bulk.set_items(usernames)
 
         def worker():
             downloaded_total = 0
@@ -806,6 +861,8 @@ def create_app(
                     if bulk.cancel:
                         break
                     bulk.update(current=username)
+                    bulk.mark_item(index, state="active")
+                    acct_downloaded = 0
                     if types == "stories":
                         posts = []   # nur Stories gewünscht – Beiträge auslassen
                     else:
@@ -814,6 +871,7 @@ def create_app(
                         except DownloaderError as exc:
                             logger.warning("Massen-Download @%s übersprungen: %s",
                                            username, exc)
+                            bulk.mark_item(index, state="done", n=0)
                             bulk.update(done=index + 1)
                             continue
                     for post in posts:
@@ -834,7 +892,9 @@ def create_app(
                             if downloader.download_post(post):
                                 db.mark_downloaded(post.shortcode, username)
                                 downloaded_total += 1
+                                acct_downloaded += 1
                                 bulk.update(downloaded=downloaded_total)
+                                bulk.mark_item(index, n=acct_downloaded)
                         except DownloaderError as exc:
                             logger.warning("Beitrag %s nicht geladen: %s",
                                            post.shortcode, exc)
@@ -856,10 +916,13 @@ def create_app(
                                 if downloader.download_story_item(item):
                                     db.mark_downloaded(item.shortcode, username)
                                     downloaded_total += 1
+                                    acct_downloaded += 1
                                     bulk.update(downloaded=downloaded_total)
+                                    bulk.mark_item(index, n=acct_downloaded)
                         except DownloaderError as exc:
                             logger.warning("%s @%s übersprungen: %s",
                                            _kind, username, exc)
+                    bulk.mark_item(index, state="done", n=acct_downloaded)
                     bulk.update(done=index + 1)
                     # Rücksichtsvolle Pause zwischen den Konten (mit Jitter,
                     # damit kein maschinenhaft exakter Takt entsteht).
@@ -1021,6 +1084,21 @@ def create_app(
         except DownloaderError as exc:
             return jsonify(error=str(exc)), 502
         followees_total = len(all_usernames)
+        # NEU gefolgte Konten nach vorne holen: Instagram liefert die
+        # Abo-Liste NICHT chronologisch, und der Feed lädt standardmäßig nur
+        # die ersten paar Profile. Wer neu gefolgt wurde (steht in der Live-
+        # Liste, aber noch nicht im lokalen Zwischenspeicher), fiele sonst aus
+        # dem Feed heraus und man sähe seine Beiträge nie. Darum: unbekannte
+        # (= neu gefolgte) Konten zuerst.
+        try:
+            known = {a["username"] for a in _cached_social("following")[0]}
+        except Exception:
+            known = set()
+        if known:
+            fresh_first = [u for u in all_usernames if u not in known]
+            if fresh_first:
+                rest = [u for u in all_usernames if u in known]
+                all_usernames = fresh_first + rest
         if profiles > 0:
             usernames = all_usernames[offset:offset + profiles]
         else:

@@ -27,6 +27,36 @@ def test_try_start_rejects_second_start():
     assert job.snapshot()["total"] == 3   # unverändert
 
 
+def test_items_queue_tracks_per_account_state():
+    """Die Live-Ansicht („Was wird gerade geladen?") liest die Warteschlange
+    aus dem Snapshot: je Konto Zustand (pending/active/done) + Zähler."""
+    job = _BulkJob()
+    assert job.snapshot()["items"] == []
+    job.try_start(total=2)
+    job.set_items(["alice", "bob"])
+    snap = job.snapshot()
+    assert [it["name"] for it in snap["items"]] == ["alice", "bob"]
+    assert all(it["state"] == "pending" for it in snap["items"])
+
+    job.mark_item(0, state="active", n=1)
+    job.mark_item(0, state="done", n=3)
+    job.mark_item(1, state="active")
+    items = job.snapshot()["items"]
+    assert items[0] == {"name": "alice", "state": "done", "n": 3}
+    assert items[1]["state"] == "active"
+    # Snapshot ist eine Kopie: Ändern der Kopie berührt den Job nicht.
+    items[0]["state"] = "x"
+    assert job.snapshot()["items"][0]["state"] == "done"
+
+
+def test_reset_clears_items():
+    job = _BulkJob()
+    job.try_start(total=1)
+    job.set_items(["alice"])
+    job.reset()
+    assert job.snapshot()["items"] == []
+
+
 def test_try_start_is_atomic_under_contention():
     job = _BulkJob()
     ready = threading.Barrier(20)

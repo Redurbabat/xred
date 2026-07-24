@@ -116,6 +116,11 @@
   /* ⭐-Anpinnen und 🏷-Gruppe in der Kontenzeile */
   .acctrow .favbtn{background:none; border:0; font-size:17px; cursor:pointer;
         flex:0 0 auto; opacity:.85; padding:4px}
+  /* „+ Folgen"-Umschalter (Suche): Pille statt Icon */
+  .acctrow .folbtn{font-size:13px; font-weight:600; color:var(--accent);
+        border:1px solid var(--accent); border-radius:10px; padding:5px 10px;
+        white-space:nowrap; opacity:1}
+  .acctrow .folbtn.on{color:var(--muted); border-color:var(--border); font-weight:500}
   .grpchip{margin-left:6px; font-size:11px; border:1px solid var(--border);
         border-radius:8px; padding:0 5px; color:var(--muted)}
   .searchbox{position:sticky; top:56px; background:var(--bg); padding:8px 0 12px; z-index:5}

@@ -62,6 +62,36 @@ def test_favorite_and_group(db: Database):
     assert db.get_social_list("following")[0]["favorite"] == 0
 
 
+def test_add_and_remove_single_social_account(db: Database):
+    # Einzel-Hinzufügen (z. B. „Folgen" aus der Suche) – hängt ans Ende an.
+    db.replace_social_list("following", [{"username": "a", "pic": ""}])
+    db.add_social_account("following", {"username": "Neu", "full_name": "Neu N",
+                                        "pic": "u"})
+    assert _names(db.get_social_list("following")) == ["a", "neu"]
+    # Idempotent: erneutes Hinzufügen erzeugt keinen Duplikat-Eintrag.
+    db.add_social_account("following", {"username": "neu"})
+    assert _names(db.get_social_list("following")) == ["a", "neu"]
+    # Verlauf: genau EIN 'added'-Ereignis für "neu".
+    added = [e for e in db.social_events()
+             if e["username"] == "neu" and e["event"] == "added"]
+    assert len(added) == 1
+    # Entfernen meldet True und verschwindet aus der Liste + 'removed'-Ereignis.
+    assert db.remove_social_account("following", "neu") is True
+    assert _names(db.get_social_list("following")) == ["a"]
+    assert db.remove_social_account("following", "neu") is False   # schon weg
+    assert any(e["username"] == "neu" and e["event"] == "removed"
+               for e in db.social_events())
+
+
+def test_is_favorite_lookup(db: Database):
+    assert db.is_favorite("dave") is False
+    db.set_favorite("dave", True)          # funktioniert auch ohne Listeneintrag
+    assert db.is_favorite("dave") is True
+    assert db.is_favorite("@Dave") is True  # normalisiert (@, Groß/klein)
+    db.set_favorite("dave", False)
+    assert db.is_favorite("dave") is False
+
+
 def test_story_flag_is_exclusive(db: Database):
     db.replace_social_list("following", [
         {"username": "a", "pic": ""}, {"username": "b", "pic": ""},

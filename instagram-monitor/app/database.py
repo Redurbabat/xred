@@ -650,6 +650,82 @@ class Database:
         )
         self.bump_social_version()
 
+    def is_favorite(self, username: str) -> bool:
+        """Ist dieses Konto angepinnt (⭐)? Für Treffer, die (noch) nicht in
+        einer Liste stehen (z. B. Suchergebnisse)."""
+        username = username.strip().lstrip("@").lower()
+        if not username:
+            return False
+        rows = self._query(
+            "SELECT favorite FROM account_activity WHERE username = ?",
+            (username,),
+        )
+        return bool(rows and rows[0]["favorite"])
+
+    def add_social_account(self, kind: str, item: dict) -> None:
+        """Fügt EIN Konto zur lokalen Liste ('following'/'followers') hinzu.
+
+        Ergänzt die wholesale-Ersetzung (:meth:`replace_social_list`) um ein
+        Einzel-Hinzufügen – z. B. „Folgen" aus der Suche. Neueinträge werden
+        ans Ende gehängt (höchste ``position``) und als Ereignis 'added'
+        vermerkt (nur wenn wirklich neu). Idempotent.
+        """
+        username = str(item.get("username", "")).strip().lstrip("@").lower()
+        if not username:
+            return
+        now = _now_utc()
+        with self._lock:
+            existed = self._conn.execute(
+                "SELECT position FROM social_accounts WHERE kind = ? AND username = ?",
+                (kind, username),
+            ).fetchone()
+            row = self._conn.execute(
+                "SELECT COALESCE(MAX(position), -1) + 1 AS p "
+                "FROM social_accounts WHERE kind = ?",
+                (kind,),
+            ).fetchone()
+            position = existed["position"] if existed else int(row["p"])
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO social_accounts
+                    (kind, username, full_name, pic_url, position)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (kind, username, item.get("full_name", "") or "",
+                 item.get("pic", "") or "", position),
+            )
+            if not existed:
+                self._conn.execute(
+                    "INSERT INTO social_events (kind, username, event, happened_at) "
+                    "VALUES (?, ?, 'added', ?)",
+                    (kind, username, now),
+                )
+            self._conn.commit()
+        self.bump_social_version()
+
+    def remove_social_account(self, kind: str, username: str) -> bool:
+        """Entfernt EIN Konto aus der lokalen Liste. Rückgabe: war es drin?"""
+        username = username.strip().lstrip("@").lower()
+        if not username:
+            return False
+        now = _now_utc()
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM social_accounts WHERE kind = ? AND username = ?",
+                (kind, username),
+            )
+            removed = cur.rowcount > 0
+            if removed:
+                self._conn.execute(
+                    "INSERT INTO social_events (kind, username, event, happened_at) "
+                    "VALUES (?, ?, 'removed', ?)",
+                    (kind, username, now),
+                )
+            self._conn.commit()
+        if removed:
+            self.bump_social_version()
+        return removed
+
     def set_story_usernames(self, usernames: list[str]) -> None:
         """Merkt, welche Konten GERADE eine aktive Story haben.
 

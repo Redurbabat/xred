@@ -899,7 +899,11 @@ function renderProfileHeader(info){
         <div class="s ${isOwn?'link':''}" id="pf_following"><b>${fmt(info.following)}</b>Gefolgt</div>
       </div>
       ${info.biography?`<div class="pf-bio">${linkify(info.biography)}</div>`:''}
+      <div class="pf-actions" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn ghost small" id="pf_dl" title="Alle Beiträge, Videos, Stories & Highlights dieses Kontos laden">⬇ Konto laden</button>
+      </div>
     </div>`;
+  const dl=$("pf_dl"); if(dl) dl.onclick=()=>downloadAccount(info.username);
   if(isOwn){ const f1=$("pf_followers"), f2=$("pf_following");
     if(f1) f1.onclick=showFollowers; if(f2) f2.onclick=showFollowing; }
   else pushRecent({username:info.username, full_name:info.full_name, avatar:info.avatar});
@@ -1051,12 +1055,23 @@ function accountRow(a, selectable){
     : '';
   const ring = a.has_story ? ' class="storyring" title="hat gerade eine Story"' : '';
   const grp = a.group ? '<span class="grpchip">🏷 '+esc(a.group)+'</span>' : '';
-  // ⭐/🏷 nur in den Gefolgt-/Follower-Listen (dort liefert die Übersicht
-  // die Felder favorite/group mit) – nicht in Suche & Co.
-  const extras = a.favorite!==undefined
-    ? '<button class="favbtn" title="Anpinnen (immer oben)">'+(a.favorite?'⭐':'☆')+'</button>'
-      +'<button class="favbtn grpbtn" title="Gruppe zuweisen">🏷</button>'
+  // In der Suche (a.following ist dort gesetzt): „+ Folgen"-Umschalter, der
+  // das Konto zur lokalen Liste hinzufügt/entfernt (kein echter IG-Follow).
+  const canFollow = a.following!==undefined;
+  const folBtn = canFollow
+    ? '<button class="favbtn folbtn'+(a.following?' on':'')+'" title="'
+      +(a.following?'In deiner Liste – tippen zum Entfernen':'Zu deiner Liste hinzufügen')
+      +'">'+(a.following?'✓ Gefolgt':'+ Folgen')+'</button>'
     : '';
+  // ⭐ Anpinnen: in Gefolgt-/Follower-Listen UND in Suchtreffern (beide
+  // liefern das Feld favorite). 🏷 Gruppe nur in den Listen.
+  const favBtn = a.favorite!==undefined
+    ? '<button class="favbtn" title="Anpinnen (immer oben)">'+(a.favorite?'⭐':'☆')+'</button>'
+    : '';
+  const grpBtn = (a.favorite!==undefined && !canFollow)
+    ? '<button class="favbtn grpbtn" title="Gruppe zuweisen">🏷</button>'
+    : '';
+  const extras = folBtn + favBtn + grpBtn;
   r.innerHTML = cb + (a.avatar?`<img loading="lazy" decoding="async" src="${a.avatar}"${ring}>`:`<div class="ph${a.has_story?' storyring':''}">@</div>`)
     + `<div style="flex:1;min-width:0"><div class="fn">${esc(a.full_name||a.username)}${a.is_verified?'<span class="verified">✔</span>':''}</div><div class="un">@${esc(a.username)}${grp}</div>${lp}</div>`
     + extras;
@@ -1076,6 +1091,31 @@ function accountRow(a, selectable){
     const {data}=await api("/api/group",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({username:a.username, group:g})});
     if(data && data.ok) toast(g.trim()?("@"+a.username+" → Gruppe „"+g.trim()+"“"):"Gruppe entfernt","ok");
+  };
+  const flb=r.querySelector(".folbtn");
+  if(flb) flb.onclick=async (e)=>{
+    e.stopPropagation();
+    const add=!a.following;
+    a.following=add;
+    flb.textContent=add?'✓ Gefolgt':'+ Folgen';
+    flb.classList.toggle("on", add);
+    flb.title=add?'In deiner Liste – tippen zum Entfernen':'Zu deiner Liste hinzufügen';
+    const ep=add?"/api/following/add":"/api/following/remove";
+    const {data}=await api(ep,{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({username:a.username, full_name:a.full_name||""})});
+    if(data && data.error){                      // Fehler → optische Rücknahme
+      a.following=!add; flb.textContent=a.following?'✓ Gefolgt':'+ Folgen';
+      flb.classList.toggle("on", a.following); toast(data.error,"err"); return;
+    }
+    // Lokalen Listen-Speicher mitpflegen, damit „Gefolgt (N)" sofort stimmt.
+    if(add){ const c=getFollowCache("following");
+      if(!c.some(x=>x.username===a.username)){
+        c.unshift({username:a.username, full_name:a.full_name||"", avatar:a.avatar||""});
+        saveFollowCache("following", c); } }
+    else saveFollowCache("following",
+      getFollowCache("following").filter(x=>x.username!==a.username));
+    toast(add?("@"+a.username+" zu deiner Liste hinzugefügt")
+            :("@"+a.username+" aus deiner Liste entfernt"),"ok");
   };
   if(selectable){
     const cbEl=r.querySelector(".acb");
@@ -1138,6 +1178,87 @@ function hideDlBar(){ const b=$("dlbar"); if(b) b.style.display="none"; }
 async function cancelBulkAll(){
   await api("/api/download-following/cancel",{method:"POST"});
   hideDlBar(); toast("Download abgebrochen.");
+}
+// Gemeinsamer Poller für den oberen Balken (Konto-Download & Co.).
+let dlBarTimer=null;
+function startDlBarPolling(){
+  if(dlBarTimer) clearInterval(dlBarTimer);
+  dlBarTimer=setInterval(async ()=>{
+    const {data:st}=await api("/api/download-following/status");
+    if(!st || st.error){ clearInterval(dlBarTimer); dlBarTimer=null; hideDlBar(); return; }
+    const active=(st.items||[]).find(it=>it.state==="active");
+    const who = active?("@"+active.name+" · "):(st.current?("@"+st.current+" · "):"");
+    showDlBar(who+st.done+"/"+st.total+" Konten · "+st.downloaded+" Beiträge geladen",
+              st.done, st.total);
+    if(!st.running && st.finished){ clearInterval(dlBarTimer); dlBarTimer=null;
+      hideDlBar(); toast("Fertig: "+st.downloaded+" Beiträge geladen","ok"); }
+  },1000);
+}
+// „⬇ Konto laden": alles von EINEM Konto (Beiträge + Stories + Highlights).
+async function downloadAccount(username){
+  username=(username||"").trim().replace(/^@/,""); if(!username) return;
+  if(!confirm("Alles von @"+username+" laden (Beiträge, Videos, Stories & Highlights)?\n"
+    +"Läuft im Hintergrund weiter – Fortschritt oben antippbar.")) return;
+  const {data}=await api("/api/download-following",{method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({usernames:[username], count:50, types:"everything"})});
+  if(data.error){ toast(data.error,"err"); return; }
+  toast("Download von @"+username+" gestartet …","ok");
+  showDlBar("@"+username+" wird geladen …", 0, 1);
+  startDlBarPolling();
+}
+/* ---------- Live-Ansicht: „Was wird gerade geladen?" ---------- */
+// Der obere Fortschrittsbalken ist antippbar und öffnet diese Ansicht: sie
+// zeigt je Konto, ob es fertig (✅), gerade dran (spinner) oder in der
+// Warteschlange (⏳) ist – so sieht man, WAS im Hintergrund geladen wird.
+let liveTimer=null;
+function showDownloadsLive(){
+  cancelSelect(); pushView("dllive", showDownloadsLive);
+  viewMode="dllive"; setNav("");
+  if(typeof feedTimer!=="undefined" && feedTimer){clearInterval(feedTimer); feedTimer=null;}
+  $("stories_row").style.display="none"; $("filterbar").style.display="none";
+  $("subbar").innerHTML=""; $("more").innerHTML="";
+  $("pf_head").style.display="block"; $("pf_head").className="";
+  $("pf_head").innerHTML='<div style="padding:8px 4px">'
+    +'<div class="fn" style="font-weight:700;font-size:17px">⬇ Aktuelle Downloads</div>'
+    +'<div class="un" style="color:var(--muted);font-size:13px">Was gerade im Hintergrund geladen wird</div></div>';
+  $("content").innerHTML=skeletonRows(4);
+  const tick=async ()=>{
+    if(viewMode!=="dllive"){ if(liveTimer){clearInterval(liveTimer);liveTimer=null;} return; }
+    const {data:st}=await api("/api/download-following/status");
+    if(viewMode!=="dllive"){ if(liveTimer){clearInterval(liveTimer);liveTimer=null;} return; }
+    if(!st || st.error){ $("content").innerHTML='<div class="empty">Gerade wird nichts geladen.</div>'; return; }
+    renderDownloadsLive(st);
+    if(!st.running && st.finished && liveTimer){ clearInterval(liveTimer); liveTimer=null; }
+  };
+  tick();
+  if(liveTimer) clearInterval(liveTimer);
+  liveTimer=setInterval(tick, 1000);
+}
+function renderDownloadsLive(st){
+  const items=st.items||[];
+  if(!st.running && !items.length){
+    $("content").innerHTML='<div class="empty">Gerade wird nichts geladen.<br>'
+      +'<span class="hint">Starte einen Download über ein Profil („⬇ Konto laden") '
+      +'oder die Gefolgt-Liste.</span></div>'; return;
+  }
+  let html='<div class="hint" style="margin:6px 2px">'
+    +(st.running?('Lädt … '+st.done+'/'+st.total+' Konten · '+st.downloaded+' Beiträge geladen')
+                :('Fertig · '+st.downloaded+' Beiträge geladen'))
+    +(st.running?' <button class="btn ghost small" onclick="cancelBulkAll()" style="margin-left:8px">Abbrechen</button>':'')
+    +'</div>';
+  items.forEach(it=>{
+    const ic=it.state==="done"?'<div class="ph">✅</div>'
+      :it.state==="active"?'<div class="ph"><span class="spin" style="border-top-color:var(--accent)"></span></div>'
+      :'<div class="ph">⏳</div>';
+    const sub=it.state==="active"?('lädt gerade …'+(it.n?(' · '+it.n+' geladen'):''))
+      :it.state==="done"?(it.n+' geladen')
+      :'wartet …';
+    html+='<div class="acctrow" style="cursor:default">'+ic
+      +'<div style="flex:1;min-width:0"><div class="fn">@'+esc(it.name)+'</div>'
+      +'<div class="un">'+sub+'</div></div></div>';
+  });
+  $("content").innerHTML=html;
 }
 
 /* ---------- Download-Verlauf ---------- */
