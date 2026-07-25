@@ -172,6 +172,7 @@ async function pollStatusWarning(){
 }
 setInterval(pollStatusWarning, 5*60*1000);
 async function refreshStatus(){
+  if(!window._dlRestore){ window._dlRestore=true; restoreDlBar(); }
   const {data} = await api("/api/status");
   loggedIn = !!data.logged_in; currentUser = data.user || "";
   updateWarnbar(data.warning||"");
@@ -1191,12 +1192,20 @@ async function cancelBulkAll(){
   hideDlBar(); toast("Download abgebrochen.");
 }
 // Gemeinsamer Poller für den oberen Balken (Konto-Download & Co.).
-let dlBarTimer=null;
+let dlBarTimer=null, dlBarErrors=0;
 function startDlBarPolling(){
   if(dlBarTimer) clearInterval(dlBarTimer);
+  dlBarErrors=0;
   dlBarTimer=setInterval(async ()=>{
     const {data:st}=await api("/api/download-following/status");
-    if(!st || st.error){ clearInterval(dlBarTimer); dlBarTimer=null; hideDlBar(); return; }
+    // WICHTIG: Ein einzelner Fehl-Abruf heißt NICHT „kein Download" – der
+    // Server ist beim Herunterladen oft kurz beschäftigt. Erst nach vielen
+    // Fehlern in Folge aufgeben; der Download selbst läuft ja weiter.
+    if(!st || st.error || st.running===undefined){
+      if(++dlBarErrors >= 8){ clearInterval(dlBarTimer); dlBarTimer=null; }
+      return;                       // Balken NICHT verstecken
+    }
+    dlBarErrors=0;
     const active=(st.items||[]).find(it=>it.state==="active");
     const who = active?("@"+active.name+" · "):(st.current?("@"+st.current+" · "):"");
     showDlBar(who+st.done+"/"+st.total+" Konten · "+st.downloaded+" Beiträge geladen",
@@ -1204,6 +1213,17 @@ function startDlBarPolling(){
     if(!st.running && st.finished){ clearInterval(dlBarTimer); dlBarTimer=null;
       hideDlBar(); toast("Fertig: "+st.downloaded+" Beiträge geladen","ok"); }
   },1000);
+}
+// Beim Öffnen der App prüfen, ob im Hintergrund schon ein Download läuft –
+// dann den antippbaren Balken sofort wieder anzeigen (er ging z. B. durch
+// Neuladen der Seite verloren, obwohl der Download weiterlief).
+async function restoreDlBar(){
+  const {data:st}=await api("/api/download-following/status");
+  if(st && !st.error && st.running){
+    showDlBar((st.current?("@"+st.current+" · "):"")+st.done+"/"+st.total
+      +" Konten · "+st.downloaded+" Beiträge geladen", st.done, st.total);
+    startDlBarPolling();
+  }
 }
 // „⬇ Konto laden": alles von EINEM Konto (Beiträge + Stories + Highlights).
 async function downloadAccount(username){
@@ -1342,11 +1362,19 @@ function showDownloadsLive(){
     +'<div class="fn" style="font-weight:700;font-size:17px">⬇ Aktuelle Downloads</div>'
     +'<div class="un" style="color:var(--muted);font-size:13px">Was gerade im Hintergrund geladen wird</div></div>';
   $("content").innerHTML=skeletonRows(4);
+  let liveErrors=0;
   const tick=async ()=>{
     if(viewMode!=="dllive"){ if(liveTimer){clearInterval(liveTimer);liveTimer=null;} return; }
     const {data:st}=await api("/api/download-following/status");
     if(viewMode!=="dllive"){ if(liveTimer){clearInterval(liveTimer);liveTimer=null;} return; }
-    if(!st || st.error){ $("content").innerHTML='<div class="empty">Gerade wird nichts geladen.</div>'; return; }
+    // Kurzer Schluckauf (Server lädt gerade eine große Datei) ist NICHT
+    // „nichts geladen": bisherige Anzeige stehen lassen, weiter versuchen.
+    if(!st || st.error || st.running===undefined){
+      if(++liveErrors >= 8){ $("content").innerHTML=
+        '<div class="empty">Keine Antwort vom Server.<br><span class="hint">Die App kurz schließen und neu öffnen.</span></div>'; }
+      return;
+    }
+    liveErrors=0;
     renderDownloadsLive(st);
     if(!st.running && st.finished && liveTimer){ clearInterval(liveTimer); liveTimer=null; }
   };
@@ -1362,24 +1390,71 @@ function renderDownloadsLive(st){
       +'oder die Gefolgt-Liste.</span></div>';
     renderResumeBox(); return;
   }
+  const done=items.filter(it=>it.state==="done");
+  const active=items.find(it=>it.state==="active");
+  const pending=items.filter(it=>it.state==="pending");
   let html='<div class="hint" style="margin:6px 2px">'
-    +(st.running?('Lädt … '+st.done+'/'+st.total+' Konten · '+st.downloaded+' Beiträge geladen')
-                :('Fertig · '+st.downloaded+' Beiträge geladen'))
+    +(st.running?('Lädt … '+st.done+'/'+st.total+' Konten · '+st.downloaded+' Dateien geladen')
+                :('Fertig · '+st.downloaded+' Dateien geladen'))
     +(st.running?' <button class="btn ghost small" onclick="cancelBulkAll()" style="margin-left:8px">Abbrechen</button>':'')
     +'</div>';
-  items.forEach(it=>{
-    const ic=it.state==="done"?'<div class="ph">✅</div>'
-      :it.state==="active"?'<div class="ph"><span class="spin" style="border-top-color:var(--accent)"></span></div>'
-      :'<div class="ph">⏳</div>';
-    const sub=it.state==="active"?('lädt gerade …'+(it.n?(' · '+it.n+' geladen'):''))
-      :it.state==="done"?(it.n+' geladen')
-      :'wartet …';
-    html+='<div class="acctrow" style="cursor:default">'+ic
-      +'<div style="flex:1;min-width:0"><div class="fn">@'+esc(it.name)+'</div>'
-      +'<div class="un">'+sub+'</div></div></div>';
-  });
+  // ---- Bereich 1: WIRD JETZT BEARBEITET ----
+  if(st.running){
+    html+='<div style="margin:10px 2px 4px;font-weight:700">🔄 Wird jetzt bearbeitet</div>';
+    if(active){
+      html+='<div class="acctrow" style="cursor:pointer;border:1px solid var(--accent);border-radius:12px" onclick="openProfile(\''+esc(active.name)+'\')">'
+        +'<img loading="lazy" src="/avatar/'+encodeURIComponent(active.name)+'" onerror="this.outerHTML=\'<div class=ph>@</div>\'">'
+        +'<div style="flex:1;min-width:0"><div class="fn">@'+esc(active.name)+'</div>'
+        +'<div class="un">lädt gerade …'+(active.n?(' '+active.n+' Dateien in diesem Lauf'):'')+'</div>'
+        +'<div class="un" id="live_files">📥 prüfe, was schon da ist …</div></div>'
+        +'<span class="spin" style="border-top-color:var(--accent)"></span></div>';
+      loadLiveFiles(active.name);
+    } else {
+      const nxt=pending.length?('gleich weiter mit @'+esc(pending[0].name)):'gleich fertig …';
+      html+='<div class="hint" style="margin:2px 2px 6px">kurze Pause zwischen den Konten – '+nxt+'</div>';
+    }
+  }
+  // ---- Bereich 2: ALS NÄCHSTES ----
+  if(pending.length){
+    html+='<div style="margin:12px 2px 4px;font-weight:700">⏭ Als Nächstes ('+pending.length+')</div>';
+    pending.slice(0,10).forEach(it=>{
+      html+='<div class="acctrow" style="cursor:default"><div class="ph">⏳</div>'
+        +'<div style="flex:1;min-width:0"><div class="fn">@'+esc(it.name)+'</div>'
+        +'<div class="un">wartet …</div></div></div>';
+    });
+    if(pending.length>10) html+='<div class="hint" style="margin:2px 2px">… und '+(pending.length-10)+' weitere</div>';
+  }
+  // ---- Bereich 3: FERTIG in diesem Lauf ----
+  if(done.length){
+    html+='<div style="margin:12px 2px 4px;font-weight:700">✅ Fertig in diesem Lauf ('+done.length+')</div>';
+    done.slice(-5).reverse().forEach(it=>{
+      html+='<div class="acctrow" style="cursor:pointer" onclick="openProfile(\''+esc(it.name)+'\')">'
+        +'<div class="ph">✅</div><div style="flex:1;min-width:0"><div class="fn">@'+esc(it.name)+'</div>'
+        +'<div class="un">'+it.n+' Dateien geladen</div></div></div>';
+    });
+    if(done.length>5) html+='<div class="hint" style="margin:2px 2px">Alle fertigen Konten: Knopf „✅ Erledigt" in der Gefolgt-Liste</div>';
+  }
   $("content").innerHTML=html;
   if(!st.running) renderResumeBox();
+}
+// Zeile „was ist von diesem Konto schon auf dem Gerät" im Aktiv-Kasten –
+// höchstens alle 10 s je Konto neu geholt (der Server zählt echte Dateien).
+let _liveFilesUser="", _liveFilesAt=0, _liveFilesText="";
+async function loadLiveFiles(username){
+  const now=Date.now();
+  if(username===_liveFilesUser && now-_liveFilesAt<10000){
+    const el=$("live_files"); if(el && _liveFilesText) el.textContent=_liveFilesText;
+    return;
+  }
+  _liveFilesUser=username; _liveFilesAt=now;
+  const {data}=await api("/api/account-files/"+encodeURIComponent(username));
+  const el=$("live_files"); if(!el) return;
+  if(!data || data.error){ el.textContent=""; return; }
+  const c=data.counts||{}; const parts=[];
+  if(c.Fotos) parts.push(c.Fotos+" Fotos"); if(c.Videos) parts.push(c.Videos+" Videos");
+  if(c.Story) parts.push(c.Story+" Story"); if(c.Highlights) parts.push(c.Highlights+" Highlights");
+  _liveFilesText = parts.length ? ("📥 Schon auf dem Gerät: "+parts.join(" · ")) : "📥 Noch nichts von diesem Konto auf dem Gerät.";
+  el.textContent=_liveFilesText;
 }
 // „Weitermachen": zeigt einen abgebrochenen Auftrag und bietet an, dort
 // fortzusetzen, wo er aufgehört hat (statt bei 600 Konten von vorn).

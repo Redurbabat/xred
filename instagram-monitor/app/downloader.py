@@ -237,6 +237,9 @@ class InstagramDownloader:
         # Kurzlebiger Zwischenspeicher (username → (zeit, daten)) für
         # Beiträge und Profil-Infos; macht Navigation spürbar schneller.
         self._recent_cache: dict = {}
+        # Zuletzt gesehene Profilbild-URLs (username -> CDN-URL): erspart dem
+        # Profilbild-Download einen eigenen Instagram-Abruf.
+        self._pic_urls: dict[str, str] = {}
         self._profile_cache: dict = {}
 
         # Ordner für die Session-Datei (Cookies) des angemeldeten Kontos.
@@ -829,6 +832,9 @@ class InstagramDownloader:
         try:
             profile = self._get_profile(username)
             profile_is_private = profile.is_private
+            pic = getattr(profile, "profile_pic_url", "") or ""
+            if pic:
+                self._pic_urls[key] = str(pic)
         except ProfileNotExistsException as exc:
             raise TemporaryError(
                 f"Profil @{username} konnte nicht geladen werden: {exc}"
@@ -1376,6 +1382,32 @@ class InstagramDownloader:
     # ------------------------------------------------------------------
     # Download (auf den PC, in den konfigurierten Ordner)
     # ------------------------------------------------------------------
+    def download_profile_pic(self, username: str) -> bool:
+        """Speichert das Profilbild eines Kontos als ``<konto>/Profilbild.jpg``.
+
+        Nutzt die beim letzten Profil-Abruf gemerkte CDN-URL (kein weiterer
+        Instagram-Abruf noetig); nur wenn keine bekannt ist, wird das Profil
+        einmal geholt. Vorhandene Datei = fertig (True nur bei NEUEM Download).
+        """
+        username = username.strip().lstrip("@").lower()
+        if not username:
+            return False
+        dest = self._settings.download_dir / username / "Profilbild.jpg"
+        if dest.exists():
+            return False
+        url = self._pic_urls.get(username)
+        if not url:
+            try:
+                profile = self._get_profile(username)
+                url = str(getattr(profile, "profile_pic_url", "") or "")
+            except Exception:
+                return False
+        if not url:
+            return False
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        self._download_file(url, dest)
+        return True
+
     def _download_file(self, url: str, dest: Path) -> None:
         """Lädt eine einzelne Medien-Datei vom CDN und speichert sie atomar.
 

@@ -1019,6 +1019,15 @@ def create_app(
                         except DownloaderError as exc:
                             logger.warning("%s @%s übersprungen: %s",
                                            _kind, username, exc)
+                    # Profilbild des Kontos mitsichern (einmalig; nutzt die
+                    # beim Beitrags-Abruf gemerkte CDN-URL, kein Extra-Abruf).
+                    try:
+                        pic_fn = getattr(downloader, "download_profile_pic", None)
+                        if pic_fn is not None:
+                            pic_fn(username)
+                    except Exception:
+                        logger.debug("Profilbild @%s nicht gespeichert.", username,
+                                     exc_info=True)
                     bulk.mark_item(index, state="done", n=acct_downloaded)
                     # „Komplett"-Lauf: Konto als ERLEDIGT vermerken (nur wenn
                     # nicht abgebrochen wurde – sonst wäre es nur halb geladen).
