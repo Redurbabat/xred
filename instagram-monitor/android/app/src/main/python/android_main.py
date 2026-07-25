@@ -37,7 +37,31 @@ def start_server(base_dir: str) -> int:
     from app.settings import Settings
     from app.web import create_app
 
-    db = Database(base / "data" / "monitor.db")
+    # Daten (Favoriten, Listen, Anmeldung, „schon geladen") DAUERHAFT ablegen:
+    # Der App-eigene Ordner (Android/data/…) wird beim Deinstallieren
+    # GELÖSCHT – dann wären Favoriten & Co. weg. Der öffentliche Ordner
+    # Pictures/InstagramMonitor überlebt dagegen eine Neuinstallation.
+    # Dorthin legen wir Datenbank + Sitzungen (versteckter Unterordner) und
+    # übernehmen eine eventuell vorhandene alte Datenbank einmalig.
+    data_dir = base / "data"
+    try:
+        shared = Path("/storage/emulated/0/Pictures/InstagramMonitor/.appdaten")
+        shared.mkdir(parents=True, exist_ok=True)
+        probe = shared / ".schreibtest"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        old_db = data_dir / "monitor.db"
+        if old_db.is_file() and not (shared / "monitor.db").is_file():
+            import shutil
+            shutil.copy2(old_db, shared / "monitor.db")     # einmalig übernehmen
+            old_sessions = data_dir / "sessions"
+            if old_sessions.is_dir() and not (shared / "sessions").exists():
+                shutil.copytree(old_sessions, shared / "sessions")
+        data_dir = shared
+    except OSError:
+        pass    # keine Freigabe → App-eigener Ordner (wie bisher)
+
+    db = Database(data_dir / "monitor.db")
     settings = Settings(db, default_download_dir=str(base / "downloads"))
 
     # Wenn der „Alle Dateien“-Zugriff erteilt wurde: sichtbar in den
@@ -57,7 +81,7 @@ def start_server(base_dir: str) -> int:
                 settings.download_dir = pictures
     except OSError:
         pass  # keine Freigabe – privater App-Speicher bleibt in Ordnung
-    downloader = InstagramDownloader(settings, session_dir=base / "data" / "sessions")
+    downloader = InstagramDownloader(settings, session_dir=data_dir / "sessions")
     flask_app = create_app(db, settings, downloader)
 
     def _run() -> None:

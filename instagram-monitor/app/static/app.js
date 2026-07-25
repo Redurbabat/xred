@@ -1294,7 +1294,8 @@ function renderDownloadsLive(st){
   if(!st.running && !items.length){
     $("content").innerHTML='<div class="empty">Gerade wird nichts geladen.<br>'
       +'<span class="hint">Starte einen Download über ein Profil („⬇ Konto laden") '
-      +'oder die Gefolgt-Liste.</span></div>'; return;
+      +'oder die Gefolgt-Liste.</span></div>';
+    renderResumeBox(); return;
   }
   let html='<div class="hint" style="margin:6px 2px">'
     +(st.running?('Lädt … '+st.done+'/'+st.total+' Konten · '+st.downloaded+' Beiträge geladen')
@@ -1313,6 +1314,32 @@ function renderDownloadsLive(st){
       +'<div class="un">'+sub+'</div></div></div>';
   });
   $("content").innerHTML=html;
+  if(!st.running) renderResumeBox();
+}
+// „Weitermachen": zeigt einen abgebrochenen Auftrag und bietet an, dort
+// fortzusetzen, wo er aufgehört hat (statt bei 600 Konten von vorn).
+async function renderResumeBox(){
+  const {data}=await api("/api/download-following/resume-info");
+  const c=$("content"); if(!c || !data || !data.available) return;
+  const box=document.createElement("div");
+  box.style.cssText="margin:12px 4px;padding:12px;border:1px solid var(--border);border-radius:12px";
+  box.innerHTML='<div style="font-weight:700;margin-bottom:4px">⏸ Unterbrochener Download</div>'
+    +'<div class="hint" style="margin-bottom:8px">'+data.done+' von '+data.total
+    +' Konten erledigt · <b>'+data.remaining+' offen</b></div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
+    +'<button class="btn" id="rs_go">▶ Weitermachen (ab Konto '+(data.done+1)+')</button>'
+    +'<button class="btn ghost" id="rs_new">↺ Von vorne</button></div>';
+  c.appendChild(box);
+  $("rs_go").onclick=async ()=>{
+    const {data:r}=await api("/api/download-following/resume",{method:"POST"});
+    if(r.error){ toast(r.error,"err"); return; }
+    toast("Weiter ab Konto "+(data.done+1)+" – "+r.total+" offen","ok");
+    showDlBar("Weitermachen …", 0, r.total); startDlBarPolling(); showDownloadsLive();
+  };
+  $("rs_new").onclick=()=>{
+    toast("Für „von vorne\" die Konten in der Gefolgt-Liste erneut auswählen und ⬇ starten.");
+    showFollowing();
+  };
 }
 
 /* ---------- Download-Verlauf ---------- */

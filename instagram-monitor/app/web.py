@@ -893,6 +893,34 @@ def create_app(
             return post_type in ("Video", "Reel")
         return True
 
+    # ------------------------------------------------------------------
+    # Fortsetzbarer Massen-Download: Der laufende Auftrag wird in der
+    # Datenbank festgehalten (Konto-Liste + wie weit er gekommen ist).
+    # Bricht der Nutzer bei 600 Konten nach 200 ab, kann er beim nächsten
+    # Mal bei 201 weitermachen statt wieder von vorne anzufangen.
+    # ------------------------------------------------------------------
+    _BULK_STATE_KEY = "bulk_job_state"
+
+    def _save_bulk_state(usernames: list[str], done: int, per_account: int,
+                         since: str, types: str) -> None:
+        try:
+            db.set_setting(_BULK_STATE_KEY, json.dumps({
+                "usernames": usernames, "done": done,
+                "count": per_account, "since": since, "types": types,
+            }))
+        except Exception:
+            logger.debug("Massen-Download-Stand nicht speicherbar.", exc_info=True)
+
+    def _load_bulk_state() -> dict:
+        try:
+            raw = db.get_setting(_BULK_STATE_KEY, "") or ""
+            data = json.loads(raw) if raw else {}
+            if isinstance(data, dict) and isinstance(data.get("usernames"), list):
+                return data
+        except Exception:
+            pass
+        return {}
+
     def start_bulk_job(usernames: list[str], per_account: int, since: str = "",
                        also_stories: bool = False, types: str = "all") -> bool:
         """Startet den Massen-Download im Hintergrund (Endpunkt & Zeitplan).
@@ -908,6 +936,10 @@ def create_app(
         # Atomar starten: verhindert doppelte Worker bei Zeitplan+Klick.
         if not bulk.try_start(total=len(usernames)):
             return False
+        # Auftrag merken, damit ein abgebrochener Lauf später GENAU dort
+        # weitergehen kann, wo er aufgehört hat (statt bei 600 Konten wieder
+        # von vorn). Wird nach jedem fertigen Konto aktualisiert.
+        _save_bulk_state(usernames, 0, per_account, since, types)
         # Warteschlange für die Live-Ansicht („Was wird gerade geladen?").
         bulk.set_items(usernames)
 
@@ -981,6 +1013,9 @@ def create_app(
                                            _kind, username, exc)
                     bulk.mark_item(index, state="done", n=acct_downloaded)
                     bulk.update(done=index + 1)
+                    # Fortschritt sichern: Nach einem Abbruch kann hier
+                    # weitergemacht werden (siehe /api/download-following/resume).
+                    _save_bulk_state(usernames, index + 1, per_account, since, types)
                     # Rücksichtsvolle Pause zwischen den Konten (mit Jitter,
                     # damit kein maschinenhaft exakter Takt entsteht).
                     if index < len(usernames) - 1 and not bulk.cancel:
@@ -1094,6 +1129,36 @@ def create_app(
     @app.get("/api/download-following/status")
     def download_following_status():
         return jsonify(bulk.snapshot())
+
+    @app.get("/api/download-following/resume-info")
+    def download_following_resume_info():
+        """Gibt es einen unterbrochenen Auftrag, den man fortsetzen kann?"""
+        state = _load_bulk_state()
+        total = len(state.get("usernames", []))
+        done = int(state.get("done", 0) or 0)
+        return jsonify(
+            available=bool(total and done < total),
+            total=total, done=done, remaining=max(0, total - done),
+            types=state.get("types", "all"),
+        )
+
+    @app.post("/api/download-following/resume")
+    def download_following_resume():
+        """Setzt den zuletzt unterbrochenen Massen-Download dort fort, wo er
+        aufgehört hat (die bereits erledigten Konten werden übersprungen)."""
+        if bulk.snapshot()["running"]:
+            return jsonify(error="Es läuft bereits ein Download."), 409
+        state = _load_bulk_state()
+        names = state.get("usernames", [])
+        done = int(state.get("done", 0) or 0)
+        rest = names[done:]
+        if not rest:
+            return jsonify(error="Es gibt nichts zum Fortsetzen."), 400
+        if not start_bulk_job(rest, int(state.get("count", 3) or 3),
+                              str(state.get("since", "") or ""),
+                              types=str(state.get("types", "all") or "all")):
+            return jsonify(error="Es läuft bereits ein Download."), 409
+        return jsonify(ok=True, total=len(rest), resumed_from=done)
 
     @app.post("/api/download-following/cancel")
     def download_following_cancel():
