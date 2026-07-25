@@ -22,9 +22,18 @@ jobs:
     # Build signiert mit der Standard-Debug-Signatur (läuft trotzdem durch).
     env:
       IGMON_KEYSTORE_B64: ${{ secrets.IGMON_KEYSTORE_B64 }}
-      IGMON_STORE_PASSWORD: ${{ secrets.IGMON_STORE_PASSWORD }}
-      IGMON_KEY_PASSWORD: ${{ secrets.IGMON_KEY_PASSWORD }}
-      IGMON_KEY_ALIAS: ${{ secrets.IGMON_KEY_ALIAS }}
+      # Eigener, ueber alle Builds STABILER Signaturschluessel an einem Ort,
+      # den wir selbst kontrollieren (der Android-Standard-Debug-Schluessel
+      # landet je nach Umgebung woanders und wurde daher nie zwischen-
+      # gespeichert -> jede APK bekam eine andere Signatur -> Android
+      # verlangte vor jedem Update ein Deinstallieren).
+      IGMON_KEYSTORE_FILE: ${{ github.workspace }}/igmon-signing/igmonitor.p12
+      # Kein Geheimnis im Repo: ohne gesetzte Secrets dient die (oeffentliche)
+      # Repository-ID als Passwort. Der Schluessel selbst verlaesst den
+      # Build-Cache nie; das Passwort schuetzt hier nur die Datei.
+      IGMON_STORE_PASSWORD: ${{ secrets.IGMON_STORE_PASSWORD || github.repository_id }}
+      IGMON_KEY_PASSWORD: ${{ secrets.IGMON_KEY_PASSWORD || github.repository_id }}
+      IGMON_KEY_ALIAS: ${{ secrets.IGMON_KEY_ALIAS || 'igmonitor' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -43,26 +52,51 @@ jobs:
         with:
           gradle-version: "8.9"
 
+      # Optional: Eigener Keystore aus einem GitHub-Secret (hat Vorrang vor
+      # dem automatisch erzeugten Schlüssel weiter unten).
       - name: Signatur-Keystore aus Secret schreiben (falls vorhanden)
         if: ${{ env.IGMON_KEYSTORE_B64 != '' }}
-        working-directory: instagram-monitor/android
         run: |
-          echo "$IGMON_KEYSTORE_B64" | base64 -d > app/igmonitor.p12
-          echo "Keystore aus Secret geschrieben ($(wc -c < app/igmonitor.p12) Bytes)."
+          mkdir -p "$(dirname "$IGMON_KEYSTORE_FILE")"
+          echo "$IGMON_KEYSTORE_B64" | base64 -d > "$IGMON_KEYSTORE_FILE"
+          echo "Keystore aus Secret geschrieben ($(wc -c < "$IGMON_KEYSTORE_FILE") Bytes)."
 
-      # Damit sich Updates OHNE Deinstallieren über die alte App installieren:
-      # denselben Debug-Signaturschlüssel über ALLE Builds hinweg verwenden.
-      # Er wird beim ersten Bau erzeugt und danach aus dem Cache wiederverwendet
-      # (gleicher Schlüssel -> gleiche Signatur -> nahtloses Update).
-      - name: Debug-Signaturschlüssel über Builds hinweg stabil halten
+      # Damit sich Updates OHNE Deinstallieren über die alte App installieren,
+      # muss JEDE APK mit demselben Schlüssel signiert sein. Der Schlüssel
+      # wird einmal erzeugt und danach über den Cache wiederverwendet.
+      - name: Signaturschlüssel aus dem Cache holen
+        id: signcache
         uses: actions/cache@v4
         with:
-          path: ~/.android/debug.keystore
-          key: android-debug-keystore-v1
+          path: ${{ github.workspace }}/igmon-signing
+          key: igmon-signing-key-v2
+
+      - name: Signaturschlüssel anlegen (nur beim allerersten Mal)
+        if: ${{ env.IGMON_KEYSTORE_B64 == '' }}
+        run: |
+          set -e
+          mkdir -p "$(dirname "$IGMON_KEYSTORE_FILE")"
+          if [ ! -f "$IGMON_KEYSTORE_FILE" ]; then
+            keytool -genkeypair -keystore "$IGMON_KEYSTORE_FILE" -storetype PKCS12 \
+              -storepass "$IGMON_STORE_PASSWORD" -keypass "$IGMON_KEY_PASSWORD" \
+              -alias "$IGMON_KEY_ALIAS" -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Instagram Monitor, OU=App, O=Redur, C=CH"
+            echo "Neuer Signaturschlüssel erzeugt (wird ab jetzt wiederverwendet)."
+          else
+            echo "Signaturschlüssel aus dem Cache übernommen."
+          fi
 
       - name: APK bauen
         working-directory: instagram-monitor/android
         run: gradle --no-daemon assembleDebug
+
+      # Kontrolle: Bleibt der Fingerabdruck über Builds gleich, installieren
+      # sich Updates ohne Deinstallieren.
+      - name: Signatur-Fingerabdruck anzeigen
+        run: |
+          keytool -list -keystore "$IGMON_KEYSTORE_FILE" -storetype PKCS12 \
+            -storepass "$IGMON_STORE_PASSWORD" -alias "$IGMON_KEY_ALIAS" \
+            | grep -i "SHA256" || true
 
       - name: APK umbenennen
         run: cp instagram-monitor/android/app/build/outputs/apk/debug/app-debug.apk InstagramMonitor.apk

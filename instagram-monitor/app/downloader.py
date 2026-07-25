@@ -385,6 +385,23 @@ class InstagramDownloader:
             return
         try:
             self._loader.load_session_from_file(username, str(session_file))
+            # WICHTIG: Die geladenen Cookies können längst abgelaufen sein.
+            # Instaloader meldet danach trotzdem „angemeldet" (es prüft nur,
+            # ob ein Benutzername gesetzt ist). Alle Abrufe liefen dann in
+            # Wahrheit ANONYM – bei privaten Konten kommen dabei einfach
+            # NULL Beiträge zurück, und die Oberfläche zeigte „Keine Beiträge
+            # gefunden" statt „bitte neu anmelden". Darum einmal echt prüfen.
+            try:
+                detected = self._loader.test_login()
+            except Exception:
+                detected = username      # Netzproblem: Anmeldung nicht verwerfen
+            if not detected:
+                self._loader.context.username = ""      # → is_logged_in = False
+                logger.warning(
+                    "Gespeicherte Anmeldung für @%s ist abgelaufen – bitte neu "
+                    "anmelden (sonst bleiben private Konten leer).", username,
+                )
+                return
             logger.info("Gespeicherte Anmeldung für @%s wiederhergestellt.", username)
         except Exception:
             logger.warning(
@@ -803,6 +820,32 @@ class InstagramDownloader:
             )
 
         posts = self._collect_posts(profile, limit=max(1, int(limit)), is_known=None)
+        # Privates Konto, das trotz Anmeldung NICHTS liefert: Instagram gibt in
+        # diesem Fall stillschweigend eine leere Liste zurück. Ohne diese
+        # Prüfung stünde in der Oberfläche „Keine Beiträge gefunden", obwohl
+        # das Konto in Wahrheit Beiträge hat – der Nutzer wüsste nicht, warum.
+        if not posts and profile_is_private:
+            try:
+                has_posts = int(profile.mediacount)
+            except Exception:
+                has_posts = 0
+            try:
+                follows_me = profile.followed_by_viewer
+            except Exception:
+                follows_me = None
+            if has_posts:
+                if follows_me is False:
+                    raise ProfileIsPrivate(
+                        f"@{username} ist privat und du folgst dem Konto mit "
+                        "dem angemeldeten Konto nicht (oder die Anfrage ist "
+                        "noch offen) – deshalb sind die Beiträge nicht "
+                        "abrufbar."
+                    )
+                raise ProfileIsPrivate(
+                    f"@{username} ist privat und die Beiträge kamen nicht "
+                    "durch. Häufigste Ursache: die Anmeldung ist abgelaufen – "
+                    "bitte in den Einstellungen neu anmelden."
+                )
         self._recent_cache[key] = (time.monotonic(), posts)
         return posts
 
