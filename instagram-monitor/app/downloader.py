@@ -346,6 +346,29 @@ class InstagramDownloader:
                 "remaining_seconds": int(remaining),
             }
 
+    def _explain_bad_response(self, exc: Exception) -> Optional[str]:
+        """Erklärt „kaputte Antwort"-Fehler in verständlichem Deutsch.
+
+        Instagram liefert bei abgelaufener Anmeldung oder zu vielen Anfragen
+        KEIN JSON, sondern eine HTML-Seite. Instaloader meldet das als
+        „JSON Query to graphql/query: Expecting value: line 1 column 1
+        (char 0)" – für Nutzer unverständlich. Rückgabe: Klartext-Hinweis
+        oder None, wenn es ein anderer Fehler ist.
+        """
+        text = str(exc).lower()
+        if "expecting value" in text or "json query" in text:
+            if not self.is_logged_in:
+                return ("Instagram hat die Anfrage abgewiesen (keine gültige "
+                        "Anmeldung). Bitte in den Einstellungen neu anmelden.")
+            return ("Instagram hat die Anfrage abgewiesen. Meist ist die "
+                    "Anmeldung abgelaufen – bitte einmal neu anmelden. Wenn "
+                    "das nicht hilft, wurden zu viele Anfragen in kurzer Zeit "
+                    "gestellt: 10–15 Minuten warten und erneut versuchen.")
+        if "please wait a few minutes" in text or "429" in text:
+            return ("Instagram bremst gerade (zu viele Anfragen). Bitte "
+                    "10–15 Minuten warten und erneut versuchen.")
+        return None
+
     def _fetch_error(self, exc: Exception, what: str) -> DownloaderError:
         """Übersetzt einen Instagram-Fehler in eine sprechende App-Ausnahme.
 
@@ -356,6 +379,10 @@ class InstagramDownloader:
         """
         if _is_checkpoint(exc):
             return LoginError(_CHECKPOINT_HINT)
+        hint = self._explain_bad_response(exc)
+        if hint:
+            self._register_throttle(exc)
+            return TemporaryError(hint)
         self._register_throttle(exc)
         return TemporaryError(f"{what} derzeit nicht abrufbar: {exc}")
 
@@ -756,7 +783,8 @@ class InstagramDownloader:
         except ConnectionException as exc:
             # Netzwerkfehler ODER Drosselung durch Instagram (z. B. 429).
             raise TemporaryError(
-                f"Verbindungsproblem bei @{username}: {exc}"
+                self._explain_bad_response(exc)
+                or f"Verbindungsproblem bei @{username}: {exc}"
             ) from exc
         except InstaloaderException as exc:
             raise TemporaryError(f"Fehler bei @{username}: {exc}") from exc
@@ -807,7 +835,8 @@ class InstagramDownloader:
             ) from exc
         except ConnectionException as exc:
             raise TemporaryError(
-                f"Verbindungsproblem bei @{username}: {exc}"
+                self._explain_bad_response(exc)
+                or f"Verbindungsproblem bei @{username}: {exc}"
             ) from exc
         except InstaloaderException as exc:
             raise TemporaryError(f"Fehler bei @{username}: {exc}") from exc
@@ -912,7 +941,8 @@ class InstagramDownloader:
         except ConnectionException as exc:
             self._register_throttle(exc)
             raise TemporaryError(
-                f"Verbindungsproblem beim Lesen der Beiträge von @{username}: {exc}"
+                self._explain_bad_response(exc)
+                or f"Verbindungsproblem beim Lesen der Beiträge von @{username}: {exc}"
             ) from exc
         except InstaloaderException as exc:
             raise TemporaryError(
