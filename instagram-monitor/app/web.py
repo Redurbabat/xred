@@ -79,6 +79,8 @@ _CACHE_SIZE = 500
 
 # Obergrenze für die Anzahl abrufbarer Beiträge pro Anfrage.
 _MAX_COUNT = 100
+# „Komplett"-Modus: praktisch unbegrenzt viele Beiträge je Konto.
+_COMPLETE_COUNT = 10_000
 
 # Pause zwischen zwei Konten beim Massen-Download (Sekunden) – rücksichtsvoll
 # gegenüber den Instagram-Servern.
@@ -927,12 +929,18 @@ def create_app(
 
         ``also_stories`` lädt je Konto zusätzlich die aktuellen Stories.
         ``types`` filtert die Medienart: "all" (Beiträge), "photos"
-        (Bild/Album), "videos" (Video/Reel), "stories" (NUR Stories) oder
-        "everything" (Beiträge + aktuelle Stories + alle Highlights).
+        (Bild/Album), "videos" (Video/Reel), "stories" (NUR Stories),
+        "highlights" (NUR Highlights), "everything" (Beiträge + Stories +
+        Highlights) oder "complete" (wie everything, aber ALLE Beiträge des
+        Kontos statt nur der neuesten – das Konto gilt danach als erledigt).
         Rückgabe: False, wenn bereits ein Download läuft.
         """
-        want_stories = also_stories or types in ("stories", "everything")
-        want_highlights = types == "everything"
+        want_stories = also_stories or types in ("stories", "everything",
+                                                 "complete")
+        want_highlights = types in ("highlights", "everything", "complete")
+        # „complete" heißt WIRKLICH alles: kein Beitrags-Limit.
+        if types == "complete":
+            per_account = _COMPLETE_COUNT
         # Atomar starten: verhindert doppelte Worker bei Zeitplan+Klick.
         if not bulk.try_start(total=len(usernames)):
             return False
@@ -952,8 +960,8 @@ def create_app(
                     bulk.update(current=username)
                     bulk.mark_item(index, state="active")
                     acct_downloaded = 0
-                    if types == "stories":
-                        posts = []   # nur Stories gewünscht – Beiträge auslassen
+                    if types in ("stories", "highlights"):
+                        posts = []   # nur Stories/Highlights – Beiträge auslassen
                     else:
                         try:
                             posts = downloader.list_recent_posts(username, per_account)
@@ -1012,6 +1020,10 @@ def create_app(
                             logger.warning("%s @%s übersprungen: %s",
                                            _kind, username, exc)
                     bulk.mark_item(index, state="done", n=acct_downloaded)
+                    # „Komplett"-Lauf: Konto als ERLEDIGT vermerken (nur wenn
+                    # nicht abgebrochen wurde – sonst wäre es nur halb geladen).
+                    if types == "complete" and not bulk.cancel:
+                        db.mark_account_complete(username)
                     bulk.update(done=index + 1)
                     # Fortschritt sichern: Nach einem Abbruch kann hier
                     # weitergemacht werden (siehe /api/download-following/resume).
@@ -1063,12 +1075,68 @@ def create_app(
         # Medientyp-Auswahl: alles / nur Fotos / nur Videos+Reels / nur Stories
         # / everything (Beiträge + Stories + Highlights).
         types = (data.get("types") or "all").strip()
-        if types not in ("all", "photos", "videos", "stories", "everything"):
+        if types not in ("all", "photos", "videos", "stories", "highlights",
+                         "everything", "complete"):
             types = "all"
 
         if not start_bulk_job(usernames, per_account, since, types=types):
             return jsonify(error="Es läuft bereits ein Massen-Download."), 409
         return jsonify(ok=True, total=len(usernames), types=types)
+
+    @app.get("/api/accounts-complete")
+    def accounts_complete():
+        """Die „Erledigt"-Liste: Konten, von denen ALLES geladen wurde."""
+        done = db.completed_accounts()
+        try:
+            total = len(_cached_social("following")[0])
+        except Exception:
+            total = 0
+        return jsonify(accounts=done, count=len(done), following_total=total)
+
+    @app.post("/api/accounts-complete/reset")
+    def accounts_complete_reset():
+        """Erledigt-Vermerk entfernen – das Konto wird dann erneut geladen."""
+        data = request.get_json(force=True, silent=True) or {}
+        username = extract_username(str(data.get("username", "")))
+        if not username:
+            return jsonify(error="Ungültiger Benutzername."), 400
+        db.clear_account_complete(username)
+        return jsonify(ok=True)
+
+    @app.post("/api/download-all-complete")
+    def download_all_complete():
+        """ALLE Abo-Konten wirklich komplett laden (Beiträge + Stories +
+        Highlights). Bereits erledigte Konten werden übersprungen, sofern
+        nicht ``include_done`` gesetzt ist."""
+        if bulk.snapshot()["running"]:
+            return jsonify(error="Es läuft bereits ein Massen-Download."), 409
+        data = request.get_json(force=True, silent=True) or {}
+        selected = data.get("usernames")
+        if isinstance(selected, list) and selected:
+            usernames = [str(u).strip().lstrip("@").lower()
+                         for u in selected if str(u).strip()]
+        else:
+            accounts, _ = _cached_social("following")
+            usernames = [a["username"] for a in accounts]
+            if not usernames:
+                try:
+                    usernames = downloader.following_usernames()
+                except LoginError as exc:
+                    return jsonify(error=str(exc)), 401
+                except DownloaderError as exc:
+                    return jsonify(error=str(exc)), 502
+        skipped = 0
+        if not data.get("include_done"):
+            before = len(usernames)
+            usernames = [u for u in usernames if not db.is_account_complete(u)]
+            skipped = before - len(usernames)
+        if not usernames:
+            return jsonify(ok=True, total=0, skipped=skipped,
+                           message="Alle Konten sind bereits komplett geladen.")
+        if not start_bulk_job(usernames, _COMPLETE_COUNT, "", types="complete"):
+            return jsonify(error="Es läuft bereits ein Massen-Download."), 409
+        return jsonify(ok=True, total=len(usernames), skipped=skipped,
+                       types="complete")
 
     @app.post("/api/download-stories")
     def download_stories():

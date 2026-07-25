@@ -1159,7 +1159,7 @@ async function downloadFollowSelected(){
   if(usernames.length===0){ toast("Bitte Konten auswählen.","err"); return; }
   const count=($("acct_count")&&$("acct_count").value)||12;
   const types=($("acct_types")&&$("acct_types").value)||"all";
-  const was={all:"Beiträge",photos:"Fotos",videos:"Videos/Reels",stories:"Stories",everything:"Beiträge + Stories & Highlights"}[types]||"Beiträge";
+  const was={all:"Beiträge",photos:"Fotos",videos:"Videos/Reels",stories:"Stories",highlights:"Highlights",everything:"Beiträge + Stories & Highlights",complete:"WIRKLICH ALLES (alle Beiträge + Stories + Highlights)"}[types]||"Beiträge";
   if(!confirm("Von "+usernames.length+" Konten "+(types==="stories"?"die aktuellen Stories":("je "+count+" "+was))+" auf den PC laden?")) return;
   const {data}=await api("/api/download-following",{method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify({usernames, count, types})});
@@ -1260,6 +1260,71 @@ async function loadAccountFiles(username){
   box.textContent = data.total
     ? ("📥 Geladen: "+parts.join(" · ")+"  ("+fmtBytes(data.bytes)+")")
     : "📥 Von diesem Konto ist noch nichts geladen.";
+}
+// „⬇⬇ ALLE Konten komplett": geht jedes Abo-Konto durch und lädt WIRKLICH
+// alles (alle Beiträge, Videos, Stories, Highlights). Bereits erledigte
+// Konten werden übersprungen, damit ein zweiter Lauf nur den Rest holt.
+async function downloadAllComplete(){
+  if(!confirm("Wirklich ALLES von ALLEN Konten laden?\n\n"
+    +"• alle Beiträge, Videos, Stories und Highlights\n"
+    +"• bereits komplett geladene Konten werden übersprungen\n"
+    +"• das dauert viele Stunden und läuft im Hintergrund weiter\n"
+    +"• Fortschritt: oben auf den Balken tippen (dort auch „Abbrechen“)")) return;
+  const {data}=await api("/api/download-all-complete",{method:"POST",
+    headers:{"Content-Type":"application/json"}, body:JSON.stringify({})});
+  if(data.error){ toast(data.error,"err"); return; }
+  if(!data.total){ toast(data.message||"Alle Konten sind bereits komplett geladen.","ok"); return; }
+  toast("Komplett-Download gestartet: "+data.total+" Konten"
+    +(data.skipped?(" ("+data.skipped+" schon erledigt)"):""),"ok");
+  showDlBar("Komplett-Download läuft …", 0, data.total);
+  startDlBarPolling();
+  showDownloadsLive();
+}
+/* ---------- „Erledigt": komplett geladene Konten ---------- */
+async function showCompleted(){
+  cancelSelect(); pushView("completed", showCompleted);
+  viewMode="completed"; setNav("");
+  if(typeof feedTimer!=="undefined" && feedTimer){clearInterval(feedTimer); feedTimer=null;}
+  $("stories_row").style.display="none"; $("filterbar").style.display="none";
+  $("subbar").innerHTML=""; $("more").innerHTML="";
+  $("pf_head").style.display="block"; $("pf_head").className="";
+  $("pf_head").innerHTML='<div style="padding:8px 4px">'
+    +'<div class="fn" style="font-weight:700;font-size:17px">✅ Erledigt</div>'
+    +'<div class="un" style="color:var(--muted);font-size:13px">Konten, von denen ALLES geladen wurde</div></div>';
+  $("content").innerHTML=skeletonRows(5);
+  const {data}=await api("/api/accounts-complete");
+  if(viewMode!=="completed") return;
+  if(!data || data.error){ renderEmpty((data&&data.error)||"Konnte nicht geladen werden."); return; }
+  const accts=data.accounts||[];
+  if(!accts.length){
+    $("content").innerHTML='<div class="empty">Noch kein Konto komplett geladen.<br>'
+      +'<span class="hint">Starte „⬇⬇ ALLE Konten komplett“ in der Gefolgt-Liste – '
+      +'jedes fertige Konto erscheint dann hier.</span></div>';
+    return;
+  }
+  let html='<div class="hint" style="margin:6px 2px">'+accts.length+' von '
+    +(data.following_total||accts.length)+' Konten komplett geladen</div>';
+  accts.forEach(a=>{
+    html+='<div class="acctrow" data-u="'+esc(a.username)+'" style="cursor:pointer">'
+      +'<div class="ph">✅</div><div style="flex:1;min-width:0">'
+      +'<div class="fn">@'+esc(a.username)+'</div>'
+      +'<div class="un">'+a.files+' Dateien · '+timeAgo(a.at)+'</div></div>'
+      +'<button class="favbtn" title="Erledigt-Vermerk entfernen (wird dann neu geladen)">↻</button></div>';
+  });
+  $("content").innerHTML=html;
+  document.querySelectorAll("#content .acctrow").forEach(r=>{
+    const u=r.dataset.u;
+    r.onclick=(e)=>{ if(!e.target.classList.contains("favbtn")) openProfile(u); };
+    const b=r.querySelector(".favbtn");
+    if(b) b.onclick=async (e)=>{
+      e.stopPropagation();
+      await api("/api/accounts-complete/reset",{method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({username:u})});
+      toast("@"+u+" wird beim nächsten Komplett-Lauf erneut geladen.","ok");
+      showCompleted();
+    };
+  });
 }
 /* ---------- Live-Ansicht: „Was wird gerade geladen?" ---------- */
 // Der obere Fortschrittsbalken ist antippbar und öffnet diese Ansicht: sie
@@ -1436,10 +1501,14 @@ async function showAccountList(kind,title,selectable){
       +'<option value="photos">nur Fotos</option>'
       +'<option value="videos">nur Videos+Reels</option>'
       +'<option value="stories">nur Stories</option>'
+      +'<option value="highlights">nur Highlights</option>'
       +'<option value="everything">Alles + Stories &amp; Highlights</option>'
+      +'<option value="complete">KOMPLETT (wirklich alles)</option>'
       +'</select></span>'
       +'<button class="chip" id="acct_dl" onclick="downloadFollowSelected()">⬇ Herunterladen (0)</button>'
       +'<button class="chip" id="all_new" title="Alle Konten dieser Liste: nur fehlende Beiträge laden" onclick="downloadAllNew()">⬇ Alles Neue</button>'
+      +'<button class="chip" id="all_complete" title="Jedes Konto WIRKLICH komplett laden: alle Beiträge, Videos, Stories und Highlights" onclick="downloadAllComplete()">⬇⬇ ALLE Konten komplett</button>'
+      +'<button class="chip" onclick="showCompleted()" title="Welche Konten sind schon komplett geladen?">✅ Erledigt</button>'
       +'<button class="chip" id="chk_btn" onclick="checkNewPosts()">🔎 Neue prüfen</button>'
       +'<button class="chip" title="Als CSV-Datei (Excel) speichern" onclick="exportListCsv()">⬇ CSV</button>';
   }

@@ -650,6 +650,59 @@ class Database:
         )
         self.bump_social_version()
 
+    def mark_account_complete(self, username: str) -> None:
+        """Merkt: Von diesem Konto wurde ALLES geladen (Komplett-Lauf).
+
+        Speichert Zeitpunkt und die Zahl der bekannten Beiträge, damit die
+        „Erledigt"-Liste zeigen kann, wann und wie viel geladen wurde.
+        """
+        username = username.strip().lstrip("@").lower()
+        if not username:
+            return
+        rows = self._query(
+            "SELECT COUNT(*) AS n FROM posts WHERE username = ? AND downloaded = 1",
+            (username,),
+        )
+        n = int(rows[0]["n"]) if rows else 0
+        self._execute(
+            """
+            INSERT INTO settings (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (f"complete_{username}", f"{_now()}|{n}"),
+        )
+        self.bump_social_version()
+
+    def completed_accounts(self) -> list[dict]:
+        """Alle als komplett geladen vermerkten Konten (neueste zuerst)."""
+        rows = self._query(
+            "SELECT key, value FROM settings WHERE key LIKE 'complete\\_%' ESCAPE '\\'"
+        )
+        out = []
+        for r in rows:
+            username = r["key"][len("complete_"):]
+            when, _, count = (r["value"] or "").partition("|")
+            try:
+                n = int(count)
+            except ValueError:
+                n = 0
+            out.append({"username": username, "at": when, "files": n})
+        out.sort(key=lambda d: d["at"], reverse=True)
+        return out
+
+    def is_account_complete(self, username: str) -> bool:
+        """Wurde von diesem Konto schon einmal ALLES geladen?"""
+        username = username.strip().lstrip("@").lower()
+        return bool(username and self.get_setting(f"complete_{username}", ""))
+
+    def clear_account_complete(self, username: str) -> None:
+        """Erledigt-Vermerk wieder entfernen (z. B. um neu zu laden)."""
+        username = username.strip().lstrip("@").lower()
+        if username:
+            self._execute("DELETE FROM settings WHERE key = ?",
+                          (f"complete_{username}",))
+            self.bump_social_version()
+
     def is_favorite(self, username: str) -> bool:
         """Ist dieses Konto angepinnt (⭐)? Für Treffer, die (noch) nicht in
         einer Liste stehen (z. B. Suchergebnisse)."""
