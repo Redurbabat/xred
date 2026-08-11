@@ -13,11 +13,11 @@ echo "Lade neueste Version ..."
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-curl -fsSL "https://github.com/Redurbabat/Red/archive/refs/heads/main.zip" -o "$tmp/igm.zip"
+curl -fsSL "https://github.com/RedBbt/insta-x/archive/refs/heads/main.zip" -o "$tmp/igm.zip"
 echo "Entpacke ..."
 unzip -q -o "$tmp/igm.zip" -d "$tmp"
 
-src="$tmp/Red-main/instagram-monitor"
+src="$tmp/insta-x-main/instagram-monitor"
 echo "Aktualisiere Programmdateien (data, downloads, logs bleiben) ..."
 if command -v rsync >/dev/null 2>&1; then
     rsync -a --exclude data --exclude downloads --exclude logs "$src/" ./

@@ -1,0 +1,25 @@
+# Python / tests
+__pycache__/
+*.py[cod]
+.pytest_cache/
+**/.pytest-tmp*/
+.ruff_cache/
+.venv/
+
+# Local application data (contains sessions/cookies and personal data)
+instagram-monitor/data/
+instagram-monitor/downloads/
+instagram-monitor/logs/
+instagram-monitor/.venv/
+
+# Local Android signing material and builds
+instagram-monitor/android/.gradle/
+instagram-monitor/android/**/build/
+instagram-monitor/android/app/*.p12
+instagram-monitor/android/app/*.jks
+
+# Editors / operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

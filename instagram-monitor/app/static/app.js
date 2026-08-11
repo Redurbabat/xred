@@ -223,6 +223,7 @@ function showHomeIdle(){ showStart(); }
 function showStart(){
   cancelSelect(); pushView("start", showStart);
   viewMode="start"; setNav("nav_home");
+  $("login_panel").style.display=loggedIn?"none":"block";
   if(typeof feedTimer!=="undefined" && feedTimer){ clearInterval(feedTimer); feedTimer=null; }
   $("pf_head").style.display="none"; $("subbar").innerHTML=""; $("more").innerHTML="";
   $("stories_row").style.display="none"; $("filterbar").style.display="none";
@@ -927,6 +928,7 @@ const EXPLORE=["reisen","natur","food","kunst","musik","sport","fashion","auto"]
 function showSearch(){
   cancelSelect(); pushView("search", showSearch); $("subbar").innerHTML="";
   viewMode="search"; setNav("nav_search");
+  $("login_panel").style.display=loggedIn?"none":"block";
   if(feedTimer){clearInterval(feedTimer); feedTimer=null;}
   $("stories_row").style.display="none"; $("filterbar").style.display="none";
   $("pf_head").style.display="none"; $("more").innerHTML="";
@@ -2075,6 +2077,194 @@ async function downloadAllNew(){
   },1000);
 }
 async function doLogout(){ if(confirm("Wirklich abmelden?")){ await api("/api/logout",{method:"POST"}); location.reload(); } }
+
+/* ---------- X-Videos (nur lokale Browser-Sitzung auf dem PC) ---------- */
+let xResults=[], xSelected=new Set(), xPollTimer=null, xLastNotice="", xAvailable=true;
+
+function showXVideos(){
+  cancelSelect(); pushView("x", showXVideos);
+  viewMode="x"; setNav("nav_x");
+  if(feedTimer){ clearInterval(feedTimer); feedTimer=null; }
+  $("manage_panel").style.display="none"; $("login_panel").style.display="none";
+  $("stories_row").style.display="none"; $("filterbar").style.display="none";
+  $("pf_head").style.display="none"; $("subbar").innerHTML=""; $("more").innerHTML="";
+  $("content").className="";
+  $("content").innerHTML=`
+    <section class="x-page">
+      <div class="x-hero">
+        <div class="x-mark">𝕏</div>
+        <div><h1>X Videos</h1><div class="hint">Ohne X API – lokale Browser-Sitzung</div></div>
+        <span class="x-status" id="x_session_status">Status wird geladen …</span>
+      </div>
+      <div class="panel x-login-box">
+        <div><b>Manuelle Anmeldung</b><div class="hint">Die App fragt kein X-Passwort ab. Anmeldung, 2FA, CAPTCHA und Sicherheitsabfragen erledigst du ausschließlich im sichtbaren Browser.</div></div>
+        <button class="btn ghost" id="x_login_btn" onclick="xOpenLogin()">Bei X anmelden / Sitzung öffnen</button>
+      </div>
+      <div class="panel x-search-box">
+        <label class="x-query"><span>Hashtag oder Suchbegriff</span><input id="x_query" maxlength="120" placeholder="#fussball oder eine Phrase" onkeydown="if(event.key==='Enter')xStartSearch()"></label>
+        <label><span>Anzahl</span><input id="x_limit" type="number" min="1" max="50" value="10"></label>
+        <label><span>Sortierung</span><select id="x_sort"><option value="latest">Neueste</option><option value="top">Top</option></select></label>
+        <label class="x-check"><input id="x_no_reposts" type="checkbox"> Reposts ausschließen</label>
+        <div class="x-search-actions">
+          <button class="btn" id="x_search_btn" onclick="xStartSearch()">Videos suchen</button>
+          <button class="btn ghost" id="x_search_cancel" onclick="xCancelSearch()" style="display:none">Abbrechen</button>
+        </div>
+      </div>
+      <div class="x-warning" id="x_warning" style="display:none"></div>
+      <div class="x-progress" id="x_progress" style="display:none"><div class="x-progress-head"><span id="x_progress_text"></span><button class="btn ghost small" id="x_download_cancel" onclick="xCancelDownload()" style="display:none">Download abbrechen</button></div><div class="x-progress-track"><i id="x_progress_fill"></i></div></div>
+      <div class="x-toolbar" id="x_toolbar" style="display:none">
+        <span id="x_selected_count">0 ausgewählt</span>
+        <button class="btn ghost small" onclick="xSelectAll(true)">Alle auswählen</button>
+        <button class="btn ghost small" onclick="xSelectAll(false)">Keine</button>
+        <button class="btn small" onclick="xDownloadSelected()">Ausgewählte herunterladen</button>
+        <button class="btn ghost small" onclick="xDownloadAllNew()">Alle neuen herunterladen</button>
+      </div>
+      <div id="x_results"><div class="empty">Es wurde noch keine X-Suche gestartet.</div></div>
+      <details class="panel x-recent"><summary>Letzte X-Downloads</summary><div id="x_recent" class="hint">Noch keine X-Downloads gespeichert.</div></details>
+      <div class="hint x-legal">Lade nur öffentlich zugängliche Inhalte herunter, für die du die erforderlichen Rechte besitzt, und beachte die X-Nutzungsbedingungen. Die App umgeht keine Zugriffs- oder Schutzmechanismen.</div>
+    </section>`;
+  xLoadStatus();
+}
+
+async function xLoadStatus(){
+  const {data,status}=await api("/api/x/status");
+  if(viewMode!=="x") return;
+  if(status===0 || !data){ xSetWarning("Lokaler X-Status nicht erreichbar."); return; }
+  xAvailable=!!data.available;
+  const label=$("x_session_status"), login=$("x_login_btn");
+  if(!data.available){
+    label.textContent="Nicht verfügbar"; label.classList.add("bad");
+    login.disabled=true; $("x_search_btn").disabled=true;
+    xSetWarning(data.warning||data.error||"X-Suche ist auf diesem Gerät nicht verfügbar.");
+  }else{
+    label.classList.toggle("ok",!!data.session_confirmed);
+    label.textContent=data.session_confirmed ? "Sitzung bereit" : (data.browser_open ? "Browser geöffnet" : "Sitzung nicht geöffnet");
+    xSetWarning(data.warning||(!data.ffmpeg ? "FFmpeg wurde nicht gefunden. Die App nutzt nach Möglichkeit eine einzelne MP4-Variante; getrennte beste Video-/Audiospuren können FFmpeg benötigen." : ""));
+  }
+  if(data.search && data.search.items && data.search.items.length){
+    xResults=data.search.items; xRenderResults();
+  }
+  xRenderRecent(data.recent_downloads||[]);
+  xApplyJobs(data.search||{}, data.download||{});
+  if((data.search&&data.search.running)||(data.download&&data.download.running)) xSchedulePoll();
+}
+
+function xSetWarning(message){
+  const box=$("x_warning"); if(!box) return;
+  box.textContent=message||""; box.style.display=message?"block":"none";
+}
+
+async function xOpenLogin(){
+  const btn=$("x_login_btn"); btn.disabled=true; btn.textContent="Browser wird geöffnet …";
+  const {data}=await api("/api/x/login/open",{method:"POST"});
+  btn.disabled=false; btn.textContent="Bei X anmelden / Sitzung öffnen";
+  if(data.error){ toast(data.error,"err"); xSetWarning(data.error); return; }
+  toast("X-Browser geöffnet. Bitte dort manuell anmelden.","ok");
+  const label=$("x_session_status"); if(label) label.textContent="Browser geöffnet – Anmeldung dort abschließen";
+}
+
+async function xStartSearch(){
+  const payload={query:$("x_query").value,limit:$("x_limit").value,
+    sort:$("x_sort").value,exclude_reposts:$("x_no_reposts").checked};
+  const btn=$("x_search_btn"); btn.disabled=true;
+  const {data}=await api("/api/x/search",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+  btn.disabled=false;
+  if(data.error){ toast(data.error,"err"); xSetWarning(data.error); return; }
+  xResults=[]; xSelected.clear(); xRenderResults(); xLastNotice=""; xSchedulePoll(100);
+}
+
+async function xCancelSearch(){
+  await api("/api/x/search/cancel",{method:"POST"});
+  const b=$("x_search_cancel"); if(b) b.disabled=true;
+}
+
+async function xCancelDownload(){
+  await api("/api/x/download/cancel",{method:"POST"});
+  const b=$("x_download_cancel"); if(b) b.disabled=true;
+}
+
+function xSchedulePoll(delay){
+  if(xPollTimer) clearTimeout(xPollTimer);
+  xPollTimer=setTimeout(xPollJobs,delay===undefined?800:delay);
+}
+
+async function xPollJobs(){
+  xPollTimer=null;
+  if(viewMode!=="x") return;
+  const [search,download]=await Promise.all([
+    api("/api/x/search/status"), api("/api/x/download/status")
+  ]);
+  if(viewMode!=="x") return;
+  const s=search.data||{}, d=download.data||{};
+  if(s.items && (s.items.length || s.finished)){ xResults=s.items; xRenderResults(); }
+  if(d.items){
+    const completed=new Set(d.items.filter(i=>i.state==="downloaded"||i.state==="skipped").map(i=>i.post_id));
+    if(completed.size){ xResults.forEach(p=>{ if(completed.has(p.post_id)) p.downloaded=true; }); xRenderResults(); }
+  }
+  xApplyJobs(s,d);
+  const notice=(s.error||d.error||((s.finished&&!s.running)?s.message:"")||((d.finished&&!d.running)?d.message:""));
+  if(notice && notice!==xLastNotice){ xLastNotice=notice; toast(notice,(s.error||d.error)?"err":"ok"); }
+  if(s.running||d.running) xSchedulePoll();
+}
+
+function xApplyJobs(search,download){
+  const searching=!!search.running, downloading=!!download.running;
+  const sb=$("x_search_btn"), sc=$("x_search_cancel"), dc=$("x_download_cancel");
+  if(sb) sb.disabled=!xAvailable||searching||downloading;
+  if(sc){ sc.style.display=searching?"":"none"; sc.disabled=false; }
+  if(dc){ dc.style.display=downloading?"":"none"; dc.disabled=false; }
+  const box=$("x_progress"), text=$("x_progress_text"), fill=$("x_progress_fill");
+  if(!box) return;
+  if(searching){
+    box.style.display="block"; text.textContent=search.message||("Suche: "+(search.found||0)+" gefunden");
+    fill.style.width=Math.min(100,((search.found||0)/Math.max(1,search.total||1))*100)+"%";
+  }else if(downloading){
+    box.style.display="block"; text.textContent=download.message||("Download "+(download.done||0)+"/"+(download.total||0));
+    fill.style.width=Math.min(100,((download.done||0)/Math.max(1,download.total||1))*100)+"%";
+  }else if(search.error||download.error){
+    box.style.display="block"; text.textContent=search.error||download.error; fill.style.width="0";
+  }else{ box.style.display="none"; }
+}
+
+function xRenderResults(){
+  const box=$("x_results"), toolbar=$("x_toolbar"); if(!box||!toolbar) return;
+  if(!xResults.length){ toolbar.style.display="none"; box.innerHTML='<div class="empty">Noch keine Videobeiträge gefunden.</div>'; return; }
+  toolbar.style.display="flex"; xUpdateSelected(); box.innerHTML="";
+  const grid=document.createElement("div"); grid.className="x-grid";
+  xResults.forEach(p=>{
+    const card=document.createElement("article"); card.className="x-card"+(p.downloaded?" downloaded":"");
+    const date=p.published_at?new Date(p.published_at).toLocaleString("de-DE"):"";
+    card.innerHTML=`
+      <label class="x-select"><input type="checkbox" ${xSelected.has(p.post_id)?"checked":""} aria-label="Beitrag auswählen"><span></span></label>
+      <div class="x-preview">${p.preview_url?`<img loading="lazy" referrerpolicy="no-referrer" src="${esc(p.preview_url)}" alt="Vorschau">`:'<div class="empty">Keine Vorschau</div>'}<b>▶</b>${p.downloaded?'<i>✓ Gespeichert</i>':''}</div>
+      <div class="x-card-body"><div class="x-author"><strong>${esc(p.author_name||p.username||"X")}</strong><span>@${esc(p.username||"")}</span></div>
+      ${date?`<time>${esc(date)}</time>`:""}<p>${esc(p.caption||"Kein Textauszug verfügbar.")}</p>
+      <div class="x-card-actions"><a class="btn ghost small" href="${esc(p.post_url)}" target="_blank" rel="noopener noreferrer">Auf X öffnen</a><button class="btn small" ${p.downloaded?"disabled":""}>${p.downloaded?"Gespeichert":"Herunterladen"}</button></div></div>`;
+    card.querySelector('.x-select input').onchange=e=>{ if(e.target.checked)xSelected.add(p.post_id);else xSelected.delete(p.post_id);xUpdateSelected(); };
+    card.querySelector('.x-card-actions button').onclick=()=>xDownloadOne(p.post_id);
+    grid.appendChild(card);
+  });
+  box.appendChild(grid);
+}
+
+function xUpdateSelected(){ const el=$("x_selected_count"); if(el) el.textContent=xSelected.size+" ausgewählt"; }
+function xRenderRecent(items){
+  const box=$("x_recent"); if(!box) return;
+  if(!items.length){ box.textContent="Noch keine X-Downloads gespeichert."; return; }
+  box.innerHTML=items.map(item=>`<div class="x-recent-row"><span>@${esc(item.username||"")} · ${esc(item.search_query||"")}</span><a href="${esc(item.post_url)}" target="_blank" rel="noopener noreferrer">${timeAgo(item.downloaded_at)||"Auf X öffnen"} ↗</a></div>`).join("");
+}
+function xSelectAll(on){ xSelected.clear(); if(on)xResults.forEach(p=>{if(!p.downloaded)xSelected.add(p.post_id);}); xRenderResults(); }
+function xDownloadOne(postId){ xStartDownload("/api/x/download",{post_id:postId}); }
+function xDownloadSelected(){
+  if(!xSelected.size){ toast("Bitte mindestens einen Beitrag auswählen.","err"); return; }
+  xStartDownload("/api/x/download-selected",{post_ids:[...xSelected]});
+}
+function xDownloadAllNew(){ xStartDownload("/api/x/download-selected",{all_new:true}); }
+async function xStartDownload(endpoint,payload){
+  const {data}=await api(endpoint,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+  if(data.error){ toast(data.error,"err"); return; }
+  xLastNotice=""; toast("X-Download gestartet …"); xSchedulePoll(100);
+}
 
 /* ---------- Tastatur / Scroll ---------- */
 document.addEventListener("keydown", e=>{

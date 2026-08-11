@@ -1,8 +1,8 @@
-# Instagram Monitor
+# Insta-X Monitor
 
 Die komplette Anwendung liegt im Ordner **[`instagram-monitor/`](instagram-monitor/)** –
-dort steht auch die ausführliche Anleitung (Installation, Browser-Oberfläche,
-Handy-Zugriff, automatischer Download-Zeitplan).
+dort steht auch die ausführliche Anleitung für Instagram-Monitoring, lokale
+X-Videosuche, Installation, Handy-Zugriff und Downloads.
 
 Schnellstart:
 

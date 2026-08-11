@@ -103,6 +103,25 @@ CREATE TABLE IF NOT EXISTS social_events (
     event     TEXT NOT NULL,      -- 'added' (neu) oder 'removed' (weg)
     happened_at TEXT NOT NULL     -- Zeitpunkt der Feststellung
 );
+
+CREATE TABLE IF NOT EXISTS x_posts (
+    post_id       TEXT PRIMARY KEY,
+    username      TEXT NOT NULL DEFAULT '',
+    author_name   TEXT NOT NULL DEFAULT '',
+    post_url      TEXT NOT NULL,
+    search_query  TEXT NOT NULL DEFAULT '',
+    caption       TEXT NOT NULL DEFAULT '',
+    preview_url   TEXT NOT NULL DEFAULT '',
+    published_at  TEXT,
+    discovered_at TEXT NOT NULL,
+    downloaded    INTEGER NOT NULL DEFAULT 0,
+    downloaded_at TEXT,
+    local_path    TEXT,
+    last_error    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_x_posts_discovered ON x_posts (discovered_at DESC);
+CREATE INDEX IF NOT EXISTS idx_x_posts_downloaded ON x_posts (downloaded, discovered_at DESC);
 """
 
 
@@ -810,6 +829,97 @@ class Database:
             ORDER BY id DESC LIMIT ?
             """,
             (int(limit),),
+        )
+
+    # ------------------------------------------------------------------
+    # X-Videobeiträge (getrennt von den Instagram-Tabellen)
+    # ------------------------------------------------------------------
+    def upsert_x_post(self, item: dict[str, Any]) -> None:
+        """Fügt ein sichtbares X-Suchergebnis idempotent ein oder aktualisiert es."""
+        self._execute(
+            """
+            INSERT INTO x_posts (
+                post_id, username, author_name, post_url, search_query,
+                caption, preview_url, published_at, discovered_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(post_id) DO UPDATE SET
+                username = excluded.username,
+                author_name = excluded.author_name,
+                post_url = excluded.post_url,
+                search_query = excluded.search_query,
+                caption = excluded.caption,
+                preview_url = excluded.preview_url,
+                published_at = excluded.published_at,
+                discovered_at = excluded.discovered_at
+            """,
+            (
+                str(item.get("post_id") or ""),
+                str(item.get("username") or ""),
+                str(item.get("author_name") or ""),
+                str(item.get("post_url") or ""),
+                str(item.get("search_query") or ""),
+                str(item.get("caption") or ""),
+                str(item.get("preview_url") or ""),
+                str(item.get("published_at") or "") or None,
+                _now_utc(),
+            ),
+        )
+
+    def is_x_post_known(self, post_id: str) -> bool:
+        rows = self._query("SELECT 1 FROM x_posts WHERE post_id = ? LIMIT 1", (post_id,))
+        return bool(rows)
+
+    def is_x_post_downloaded(self, post_id: str) -> bool:
+        rows = self._query(
+            "SELECT downloaded FROM x_posts WHERE post_id = ? LIMIT 1", (post_id,)
+        )
+        return bool(rows and rows[0]["downloaded"])
+
+    def get_x_post(self, post_id: str) -> Optional[sqlite3.Row]:
+        rows = self._query("SELECT * FROM x_posts WHERE post_id = ? LIMIT 1", (post_id,))
+        return rows[0] if rows else None
+
+    def get_x_posts(self, post_ids: list[str]) -> list[sqlite3.Row]:
+        if not post_ids:
+            return []
+        placeholders = ",".join("?" for _ in post_ids)
+        return self._query(
+            f"SELECT * FROM x_posts WHERE post_id IN ({placeholders})",  # noqa: S608
+            post_ids,
+        )
+
+    def recent_x_posts(self, limit: int = 50, only_new: bool = False) -> list[sqlite3.Row]:
+        limit = max(1, min(50, int(limit)))
+        where = "WHERE downloaded = 0" if only_new else ""
+        return self._query(
+            f"SELECT * FROM x_posts {where} ORDER BY discovered_at DESC LIMIT ?",  # noqa: S608
+            (limit,),
+        )
+
+    def mark_x_post_downloaded(self, post_id: str, local_path: str) -> None:
+        self._execute(
+            """
+            UPDATE x_posts
+            SET downloaded = 1, downloaded_at = ?, local_path = ?, last_error = NULL
+            WHERE post_id = ?
+            """,
+            (_now_utc(), local_path, post_id),
+        )
+
+    def mark_x_download_error(self, post_id: str, message: str) -> None:
+        self._execute(
+            "UPDATE x_posts SET last_error = ? WHERE post_id = ?",
+            (str(message)[:500], post_id),
+        )
+
+    def recent_x_downloads(self, limit: int = 20) -> list[sqlite3.Row]:
+        return self._query(
+            """
+            SELECT post_id, username, post_url, search_query, downloaded_at, local_path
+            FROM x_posts WHERE downloaded = 1
+            ORDER BY downloaded_at DESC LIMIT ?
+            """,
+            (max(1, min(100, int(limit))),),
         )
 
     # ------------------------------------------------------------------

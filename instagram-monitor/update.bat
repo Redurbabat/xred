@@ -16,7 +16,7 @@ echo.
 echo   Instagram Monitor - Update
 echo   ==========================
 echo   Lade neueste Version von GitHub ...
-powershell -NoProfile -Command "try { Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/Redurbabat/Red/archive/refs/heads/main.zip' -OutFile '%ZIP%' } catch { exit 1 }"
+powershell -NoProfile -Command "try { Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/RedBbt/insta-x/archive/refs/heads/main.zip' -OutFile '%ZIP%' } catch { exit 1 }"
 if errorlevel 1 (
   echo   FEHLER: Download fehlgeschlagen - besteht eine Internetverbindung?
   pause
@@ -33,7 +33,7 @@ if errorlevel 1 (
 )
 
 echo   Aktualisiere Programmdateien ^(data, downloads und logs bleiben^) ...
-robocopy "%NEW%\Red-main\instagram-monitor" "%~dp0." /E /XD data downloads logs /NFL /NDL /NJH /NJS /NP >nul
+robocopy "%NEW%\insta-x-main\instagram-monitor" "%~dp0." /E /XD data downloads logs /NFL /NDL /NJH /NJS /NP >nul
 
 del "%ZIP%" >nul 2>&1
 rmdir /s /q "%NEW%" >nul 2>&1

@@ -1,9 +1,8 @@
-# Instagram Monitor
+# Insta-X Monitor
 
-Eine Desktop-Anwendung (Python 3.12 + CustomTkinter), die **öffentliche**
-Instagram-Konten überwacht, bei neuen Beiträgen und Reels benachrichtigt und
-neue Inhalte – sofern für das Konto aktiviert und zulässig – automatisch in
-einen lokalen Ordner herunterlädt.
+Eine lokale Python-Anwendung, die **öffentliche** Instagram-Konten überwacht
+und in der Browser-Oberfläche zusätzlich öffentliche X-Videos über eine
+sichtbare, manuell angemeldete Chromium-Sitzung suchen und herunterladen kann.
 
 ![Aufbau](https://img.shields.io/badge/Python-3.12-blue) ![GUI](https://img.shields.io/badge/GUI-CustomTkinter-informational)
 
@@ -35,6 +34,42 @@ Die Browser-Oberfläche (`python web.py`) ist der bequemste Weg. Highlights:
 - **Zuverlässig**: SQLite im WAL-Modus, **Datenbank-Backup** auf Knopfdruck,
   Ansicht **fehlgeschlagener Downloads** mit „erneut versuchen“ und
   Speicherplatz-Anzeige.
+
+## X-Videosuche ohne X API
+
+Der Navigationspunkt **𝕏 / X Videos** arbeitet ohne Bearer Token und ohne
+kostenpflichtigen Entwicklerzugang. Beim Öffnen der Seite wird noch keine
+X-Anfrage ausgelöst. Erst ein Klick auf „Bei X anmelden / Sitzung öffnen“
+startet ein sichtbares Chromium-Fenster; dort meldest du dich selbst an und
+erledigst gegebenenfalls 2FA, CAPTCHA oder Sicherheitsabfragen. Die Anwendung
+fragt dein X-Passwort niemals ab und gibt Cookies weder über APIs noch Logs aus.
+
+Unterstützt werden Hashtags, Wörter und Phrasen, 1–50 Ergebnisse, „Neueste“
+oder „Top“, optional ohne Reposts, Abbruch der Suche sowie Einzel-, Auswahl-
+und „alle neuen“-Downloads. Gesucht werden nur sichtbare X-Beitragskarten mit
+Video. Statuslinks werden strikt auf `https://x.com/<name>/status/<id>`
+normalisiert und anhand der Beitrags-ID dedupliziert.
+
+Downloads landen deterministisch unter:
+
+```text
+<Download-Ordner>/X/<bereinigter-suchbegriff>/Videos/
+```
+
+`yt-dlp` lädt die beste verfügbare Videoqualität mit Audio. Ist FFmpeg
+vorhanden, können getrennte beste Video-/Audiospuren zusammengeführt werden;
+ohne FFmpeg versucht die App eine einzelne MP4-Variante. Ein Fehler bei einem
+Beitrag stoppt den restlichen Auftrag nicht. Bereits registrierte oder auf der
+Platte vorhandene Beiträge werden übersprungen.
+
+Wichtig: Die X-Funktion umgeht weder private/geschützte Inhalte noch CAPTCHA,
+Rate-Limits, Login- oder Zugriffsschutz. Lade nur Inhalte herunter, für die du
+die erforderlichen Rechte besitzt, und beachte die X-Nutzungsbedingungen.
+
+Playwright/Chromium ist in der Chaquopy-Android-App nicht verfügbar. Dort zeigt
+die X-Seite deshalb nur den Hinweis, den Server auf dem PC zu starten und vom
+Handy zu öffnen; die bestehenden Instagram-Funktionen und die Paket-ID
+`de.redur.igmonitor` bleiben unverändert.
 
 ## Funktionen (Desktop-App)
 
@@ -328,7 +363,7 @@ der komplette Server (Python/Flask/Instaloader) **eingebettet** ist –
 die App läuft damit vollständig auf dem Handy:
 
 1. Auf dem Handy die **Releases-Seite** des Projekts öffnen:
-   `https://github.com/Redurbabat/Red/releases` → Release **„📱
+   `https://github.com/RedBbt/insta-x/releases` → Release **„📱
    Instagram Monitor – Android-App"** → `InstagramMonitor.apk`
    herunterladen.
 2. Die Datei antippen → Installation aus unbekannten Quellen einmalig
@@ -455,9 +490,22 @@ source .venv/bin/activate
 # 3. Abhängigkeiten installieren
 pip install -r requirements.txt
 
+# 3a. Chromium für die X-Seite einmalig installieren
+python -m playwright install chromium
+
 # 4. Anwendung starten
 python main.py
 ```
+
+Für die Browser-Oberfläche danach `python web.py` starten. Alternativ erledigt
+`setup-x-browser.bat` unter Windows beziehungsweise `./setup-x-browser.sh`
+unter Linux und macOS die einmalige X-Browser-Einrichtung. Chromium wird nicht
+bei jedem Start neu installiert. Fehlt es, zeigt die X-Seite genau den nötigen
+Installationsbefehl an.
+
+Auf Linux können für Chromium zusätzliche Systempakete nötig sein; Playwright
+nennt sie beim Installationsversuch. FFmpeg ist optional, aber empfohlen, damit
+yt-dlp getrennte beste Video- und Audiospuren zusammenführen kann.
 
 **Hinweis für Linux:** Falls Tkinter fehlt (`ModuleNotFoundError: No module
 named 'tkinter'`), zuerst das Systempaket installieren, z. B.
@@ -506,6 +554,31 @@ gespeichert** – Instaloader legt nur eine Cookie-Session-Datei unter
 `data/sessions/` ab, sodass du beim nächsten Start angemeldet bleibst.
 Melde dich nur mit deinem eigenen Konto an und lade ausschließlich Inhalte
 herunter, zu denen du berechtigt bist.
+
+## Manuelle Abnahme der X-Funktion
+
+Diese Schritte benötigen eine echte, vom Nutzer selbst angemeldete X-Sitzung
+und sind deshalb nicht Teil der automatisierten Tests:
+
+1. Browser-Oberfläche lokal starten.
+2. Die neue X-Seite öffnen; dabei darf noch keine X-Anfrage stattfinden.
+3. „Bei X anmelden / Sitzung öffnen“ klicken.
+4. Im sichtbaren Browser manuell anmelden; 2FA/CAPTCHA nur dort erledigen.
+5. Nach `#fussball` mit Limit 5 suchen.
+6. Prüfen, dass höchstens fünf deduplizierte Videobeiträge erscheinen.
+7. Zwei Videos auswählen und herunterladen.
+8. Prüfen, dass die Dateien unter `downloads/X/fussball/Videos/` erscheinen.
+9. Dieselben Videos erneut auswählen; beide müssen übersprungen werden.
+10. Je einen laufenden Such- und Downloadauftrag abbrechen.
+11. Instagram-Feed, Profile, Downloads, Einstellungen und LAN-Zugangscode
+    weiterhin prüfen.
+12. In der Android-App prüfen, dass nur die klare Nicht-verfügbar-Meldung für X
+    erscheint und die übrige App weiter startet.
+
+Die Selektoren der X-Weboberfläche basieren auf semantischen `article`-,
+`video`-, `time`- und Statuslink-Elementen. X kann sein Layout jederzeit
+ändern; in diesem Fall stoppt die Suche mit einer verständlichen Meldung,
+statt beliebige Links zu laden.
 
 ## Projektstruktur
 
