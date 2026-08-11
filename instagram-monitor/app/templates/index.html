@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Instagram Monitor</title>
+<title>Insta-X Monitor</title>
 <link rel="icon" href="/icon.svg">
 <link rel="apple-touch-icon" href="/icon.svg">
 <link rel="manifest" href="/manifest.webmanifest">
 <meta name="theme-color" content="#000000">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="IG Monitor">
+<meta name="apple-mobile-web-app-title" content="Insta-X">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="mobile-web-app-capable" content="yes">
 <link rel="stylesheet" href="/static/app.css">
@@ -20,13 +20,14 @@
 <header>
   <div class="nav">
     <button class="iconbtn" id="back_btn" title="Zurück" onclick="goBack()" style="display:none">←</button>
-    <div class="logo" onclick="showStart()" style="cursor:pointer">Instagram Monitor</div>
+    <div class="logo" onclick="showStart()" style="cursor:pointer">Insta-X Monitor</div>
     <div class="search">
       <input id="q_user" list="follwd" placeholder="Suchen (Name oder Link) …"
              onkeydown="if(event.key==='Enter')openProfile($('q_user').value)">
       <datalist id="follwd"></datalist>
     </div>
     <div class="right">
+      <button class="iconbtn" title="X Videos" onclick="showXVideos()">𝕏</button>
       <button class="iconbtn" title="Suchen" onclick="showSearch()">🔍</button>
       <button class="iconbtn" title="Mein Profil" onclick="showMe()">👤</button>
       <button class="iconbtn" id="manage_btn" title="Einstellungen" onclick="toggleManage()">⚙️</button>
@@ -235,6 +236,7 @@
 <nav class="bottomnav" id="bottomnav">
   <button id="nav_home" class="on" title="Start" onclick="showStart()">🏠</button>
   <button id="nav_search" title="Suchen" onclick="showSearch()">🔍</button>
+  <button id="nav_x" title="X Videos" onclick="showXVideos()">𝕏</button>
   <button id="nav_reels" title="Reels" onclick="openReels()">🎬</button>
   <button id="nav_saved" title="Gespeichert" onclick="showSaved()">🔖</button>
   <button id="nav_profile" title="Mein Profil" onclick="showMe()">👤</button>

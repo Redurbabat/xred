@@ -154,6 +154,11 @@ def main(argv: list[str] | None = None) -> int:
         settings.download_dir = target
         print(f"\n  Download-Ordner: {target}")
     downloader = InstagramDownloader(settings, session_dir=DATA_DIR / "sessions")
+    # Nur der Desktop-Einstiegspunkt aktiviert X. Das Modul importiert
+    # Playwright/yt-dlp erst nach einem ausdrücklichen Klick des Nutzers.
+    from app.x_service import XService
+
+    x_service = XService(db, settings, session_dir=DATA_DIR / "x_session")
 
     if args.lan:
         host = "0.0.0.0"
@@ -185,7 +190,9 @@ def main(argv: list[str] | None = None) -> int:
               "start-web-handy starten.)")
         print("  Beenden mit Strg+C in diesem Fenster.\n")
 
-    app = create_app(db, settings, downloader, access_key=access_key)
+    app = create_app(
+        db, settings, downloader, access_key=access_key, x_service=x_service
+    )
 
     # Browser auf dem PC kurz nach dem Serverstart öffnen (best effort).
     threading.Timer(1.0, lambda: webbrowser.open(open_url)).start()

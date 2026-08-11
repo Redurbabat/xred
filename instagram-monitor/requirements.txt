@@ -24,6 +24,15 @@ plyer>=2.1.0,<3
 # ausschließlich auf 127.0.0.1 (dem eigenen Rechner).
 flask>=3.0,<4
 
+# Sichtbare lokale X-Browser-Sitzung (nur Desktop-Web; Android importiert
+# diese Abhängigkeit nicht). Chromium wird EINMALIG separat installiert:
+#   python -m playwright install chromium
+playwright>=1.55,<2
+
+# Extraktion/Download validierter öffentlicher X-Beitragslinks. Wird als
+# Python-Bibliothek verwendet, nie über eine Shell mit Nutzereingaben.
+yt-dlp>=2025.1.15,<2027
+
 # HTTP-Zugriffe (Vorschaubild-Proxy der Web-Oberfläche; wird von
 # instaloader ohnehin mitinstalliert).
 requests>=2.31,<3

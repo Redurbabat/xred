@@ -70,6 +70,7 @@ if TYPE_CHECKING:
     from .database import Database
     from .downloader import InstagramDownloader
     from .settings import Settings
+    from .x_service import XService
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +219,7 @@ def create_app(
     settings: "Settings",
     downloader: "InstagramDownloader",
     access_key: Optional[str] = None,
+    x_service: Optional["XService"] = None,
 ) -> Flask:
     """Erzeugt die Flask-Anwendung mit allen Endpunkten.
 
@@ -489,6 +491,128 @@ def create_app(
             download_dir=str(settings.download_dir),
             warning=warning,
         )
+
+    # ------------------------------------------------------------------
+    # X-Videos (Desktop: sichtbare lokale Browser-Sitzung; Android: aus)
+    # ------------------------------------------------------------------
+    _x_android_message = (
+        "X-Suche ist in der Android-App nicht verfügbar. Starte den Server "
+        "auf dem PC und öffne ihn vom Handy."
+    )
+
+    def _x_unavailable():
+        return jsonify(error=_x_android_message, available=False), 501
+
+    def _x_error(exc: BaseException, status_code: int = 400):
+        message = x_service.public_error(exc) if x_service is not None else _x_android_message
+        return jsonify(error=message), status_code
+
+    @app.get("/api/x/status")
+    def x_status():
+        if x_service is None:
+            idle = {
+                "running": False, "finished": False, "cancelled": False,
+                "total": 0, "done": 0, "found": 0, "downloaded": 0,
+                "skipped": 0, "failed": 0, "current": "", "message": "",
+                "error": "", "items": [],
+            }
+            return jsonify(
+                available=False,
+                browser_open=False,
+                session_confirmed=False,
+                warning=_x_android_message,
+                search=idle,
+                download=idle,
+                recent_downloads=[],
+            )
+        return jsonify(x_service.status())
+
+    @app.post("/api/x/login/open")
+    def x_login_open():
+        if x_service is None:
+            return _x_unavailable()
+        try:
+            return jsonify(x_service.open_login())
+        except Exception as exc:
+            return _x_error(exc, 503)
+
+    @app.post("/api/x/search")
+    def x_search_start():
+        if x_service is None:
+            return _x_unavailable()
+        data = request.get_json(force=True, silent=True) or {}
+        try:
+            started = x_service.start_search(
+                data.get("query"),
+                data.get("limit", 10),
+                data.get("sort", "latest"),
+                data.get("exclude_reposts", False),
+            )
+        except (TypeError, ValueError) as exc:
+            return _x_error(exc, 400)
+        except Exception as exc:
+            return _x_error(exc, 503)
+        if not started:
+            return jsonify(error="Es läuft bereits eine X-Suche oder ein X-Download."), 409
+        return jsonify(ok=True), 202
+
+    @app.get("/api/x/search/status")
+    def x_search_status():
+        if x_service is None:
+            return _x_unavailable()
+        return jsonify(x_service.search_job.snapshot())
+
+    @app.post("/api/x/search/cancel")
+    def x_search_cancel():
+        if x_service is None:
+            return _x_unavailable()
+        return jsonify(ok=x_service.cancel_search())
+
+    def _start_x_download(data: dict, *, single: bool = False):
+        if x_service is None:
+            return _x_unavailable()
+        try:
+            if single:
+                post_id = x_service.resolve_post_id(
+                    post_id=data.get("post_id"), post_url=data.get("post_url")
+                )
+                started = x_service.start_download([post_id])
+            else:
+                post_ids = data.get("post_ids") or []
+                if not isinstance(post_ids, list):
+                    raise ValueError("post_ids muss eine Liste sein.")
+                started = x_service.start_download(
+                    post_ids, all_new=bool(data.get("all_new", False))
+                )
+        except (TypeError, ValueError) as exc:
+            return _x_error(exc, 400)
+        except Exception as exc:
+            return _x_error(exc, 503)
+        if not started:
+            return jsonify(error="Es läuft bereits eine X-Suche oder ein X-Download."), 409
+        return jsonify(ok=True), 202
+
+    @app.post("/api/x/download")
+    def x_download_one():
+        data = request.get_json(force=True, silent=True) or {}
+        return _start_x_download(data, single=True)
+
+    @app.post("/api/x/download-selected")
+    def x_download_selected():
+        data = request.get_json(force=True, silent=True) or {}
+        return _start_x_download(data)
+
+    @app.get("/api/x/download/status")
+    def x_download_status():
+        if x_service is None:
+            return _x_unavailable()
+        return jsonify(x_service.download_job.snapshot())
+
+    @app.post("/api/x/download/cancel")
+    def x_download_cancel():
+        if x_service is None:
+            return _x_unavailable()
+        return jsonify(ok=x_service.cancel_download())
 
     @app.post("/api/login")
     def login():
@@ -1718,8 +1842,8 @@ def create_app(
     @app.get("/manifest.webmanifest")
     def manifest():
         return jsonify({
-            "name": "Instagram Monitor",
-            "short_name": "IG Monitor",
+            "name": "Insta-X Monitor",
+            "short_name": "Insta-X",
             "start_url": "/",
             "display": "standalone",
             "background_color": "#000000",
