@@ -124,6 +124,165 @@ def test_access_code_guard_also_protects_x_endpoints(tmp_path: Path):
     db.close()
 
 
+# ----------------------------------------------------------------------
+# Direkte X-Anmeldung: Der Passwort-Endpunkt gehört dem PC allein.
+# ----------------------------------------------------------------------
+
+TEST_PASSWORD = "Nur-Ein-Testwert-4711"
+LAN = {"REMOTE_ADDR": "192.168.1.42"}
+
+
+def _token(client) -> str:
+    response = client.get("/api/x/csrf")
+    assert response.status_code == 200
+    return response.get_json()["token"]
+
+
+def _login(client, *, token=None, environ=None, headers=None, payload=None):
+    body = {"identifier": "name@example.com", "password": TEST_PASSWORD}
+    if payload is not None:
+        body = payload
+    sent = {"X-CSRF-Token": token if token is not None else _token(client)}
+    sent.update(headers or {})
+    return client.post(
+        "/api/x/login", json=body, headers=sent, environ_base=environ or {}
+    )
+
+
+def test_login_endpoint_signs_in_and_never_echoes_the_password(api_env, monkeypatch):
+    client, _db, service = api_env
+    seen = {}
+
+    def fake_login(identifier, password, username=""):
+        seen.update(identifier=identifier, password=password, username=username)
+        return {
+            "ok": True,
+            "state": "signed_in",
+            "browser_open": True,
+            "session_confirmed": True,
+            "message": "Bei X angemeldet.",
+        }
+
+    monkeypatch.setattr(service, "login", fake_login)
+    response = _login(client)
+    assert response.status_code == 200
+    assert response.get_json()["state"] == "signed_in"
+    assert TEST_PASSWORD not in response.get_data(as_text=True)
+    assert seen["password"] == TEST_PASSWORD
+
+
+def test_lan_device_gets_403_on_the_password_endpoint(api_env, monkeypatch):
+    client, _db, service = api_env
+    token = _token(client)
+
+    def fail(*_args, **_kwargs):
+        raise AssertionError("Der Dienst darf über das Netzwerk nie erreicht werden.")
+
+    monkeypatch.setattr(service, "login", fail)
+    response = _login(client, token=token, environ=LAN)
+    assert response.status_code == 403
+    assert response.get_json()["local_only"] is True
+
+
+def test_lan_device_cannot_read_the_login_token(api_env):
+    client, _db, _service = api_env
+    assert client.get("/api/x/csrf", environ_base=LAN).status_code == 403
+
+
+def test_password_endpoint_requires_the_token(api_env, monkeypatch):
+    client, _db, service = api_env
+    monkeypatch.setattr(
+        service, "login", lambda *a, **k: pytest.fail("ohne Token nie aufrufen")
+    )
+    assert _login(client, token="").status_code == 403
+    assert _login(client, token="falsches-token").status_code == 403
+
+
+def test_password_endpoint_rejects_foreign_origin_and_host(api_env, monkeypatch):
+    client, _db, service = api_env
+    monkeypatch.setattr(
+        service, "login", lambda *a, **k: pytest.fail("fremde Seite nie durchlassen")
+    )
+    foreign_origin = _login(client, headers={"Origin": "https://boese.example"})
+    assert foreign_origin.status_code == 403
+    # DNS-Rebinding: fremder Name, der auf 127.0.0.1 zeigt.
+    rebinding = _login(client, headers={"Host": "angriff.example.com"})
+    assert rebinding.status_code == 403
+    assert rebinding.get_json()["local_only"] is True
+
+
+def test_password_endpoint_rejects_html_form_posts(api_env, monkeypatch):
+    client, _db, service = api_env
+    monkeypatch.setattr(
+        service, "login", lambda *a, **k: pytest.fail("Formular-POST nie durchlassen")
+    )
+    response = client.post(
+        "/api/x/login",
+        data={"identifier": "name@example.com", "password": TEST_PASSWORD},
+        headers={"X-CSRF-Token": _token(client)},
+    )
+    assert response.status_code == 403
+
+
+def test_login_endpoint_validates_input_before_touching_the_browser(api_env, monkeypatch):
+    client, _db, service = api_env
+    # Echte Prüfung von XService.login – nur der Browser bleibt tabu.
+    monkeypatch.setattr(
+        service,
+        "_browser_call",
+        lambda *a, **k: pytest.fail("ungültige Eingabe darf keinen Browser starten"),
+    )
+    for payload in (
+        {"identifier": "", "password": TEST_PASSWORD},
+        {"identifier": "name@example.com", "password": ""},
+        {"identifier": "name@example.com", "password": TEST_PASSWORD, "username": "@ungültig!"},
+    ):
+        assert _login(client, payload=payload).status_code == 400
+
+
+def test_login_failure_is_reported_without_the_password(api_env, monkeypatch, caplog):
+    from app.x_service import XLoginError
+
+    client, _db, service = api_env
+
+    def refuse(*_args, **_kwargs):
+        raise XLoginError("X hat die Zugangsdaten abgelehnt.")
+
+    monkeypatch.setattr(service, "login", refuse)
+    with caplog.at_level(0):
+        response = _login(client)
+    assert response.status_code == 401
+    assert TEST_PASSWORD not in response.get_data(as_text=True)
+    assert TEST_PASSWORD not in caplog.text
+
+
+def test_missing_browser_is_reported_as_service_unavailable(api_env, monkeypatch):
+    from app.x_service import XUnavailableError
+
+    client, _db, service = api_env
+
+    def missing(*_args, **_kwargs):
+        raise XUnavailableError(
+            "Playwright-Chromium fehlt oder startet nicht. Bitte einmalig "
+            "`python -m playwright install chromium` ausführen."
+        )
+
+    monkeypatch.setattr(service, "login", missing)
+    response = _login(client)
+    assert response.status_code == 503
+    assert "playwright install chromium" in response.get_json()["error"]
+    assert TEST_PASSWORD not in response.get_data(as_text=True)
+
+
+def test_status_marks_network_clients_as_non_local(api_env):
+    client, _db, _service = api_env
+    assert client.get("/api/x/status").get_json()["local"] is True
+    local_flag = client.get(
+        "/api/x/status", environ_base=LAN, headers={"X-Test": "1"}
+    ).get_json()["local"]
+    assert local_flag is False
+
+
 def test_api_never_returns_cookie_or_token_values(api_env, monkeypatch):
     client, _db, service = api_env
 

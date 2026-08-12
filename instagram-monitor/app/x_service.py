@@ -9,6 +9,7 @@ download.  This keeps the shared Flask application importable in Chaquopy.
 from __future__ import annotations
 
 import importlib.util
+import json
 import logging
 import queue
 import re
@@ -31,6 +32,10 @@ MAX_QUERY_LENGTH = 120
 MAX_RESULTS = 50
 MAX_SCROLL_ROUNDS = 20
 MAX_SEARCH_SECONDS = 180
+MAX_IDENTIFIER_LENGTH = 254
+MAX_USERNAME_LENGTH = 15
+MAX_PASSWORD_LENGTH = 256
+LOGIN_TIMEOUT_SECONDS = 150
 _STATUS_RE = re.compile(r"^/([A-Za-z0-9_]{1,50})/status/([0-9]{5,30})(?:/.*)?$")
 _POST_ID_RE = re.compile(r"^[0-9]{5,30}$")
 _SECRET_RE = re.compile(
@@ -39,6 +44,78 @@ _SECRET_RE = re.compile(
 )
 _VIDEO_SUFFIXES = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}
 _PREVIEW_HOSTS = {"pbs.twimg.com", "video.twimg.com", "abs.twimg.com"}
+_USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
+_LOGIN_URL = "https://x.com/i/flow/login"
+
+# Chromium ohne Passwortmanager, ohne Speichern-Dialog und ohne Autofill-
+# Server: Das X-Passwort soll ausschließlich im Formular landen und nirgends
+# im Browserprofil gespeichert werden.
+_NO_PASSWORD_MANAGER_ARGS = (
+    "--disable-features="
+    "PasswordManagerEnableAccountStorage,PasswordManagerOnboarding,"
+    "PasswordLeakDetection,PasswordGeneration,AutofillServerCommunication,"
+    "AutofillEnableAccountWalletStorage",
+    "--disable-save-password-bubble",
+    "--password-store=basic",
+    "--use-mock-keychain",
+)
+
+# Dieselbe Abschaltung als Profil-Einstellung – Chromium liest sie beim Start
+# aus <profil>/Default/Preferences und zeigt dann kein „Passwort speichern?“.
+_NO_PASSWORD_MANAGER_PREFS: dict[str, Any] = {
+    "credentials_enable_service": False,
+    "credentials_enable_autosignin": False,
+    "profile": {
+        "password_manager_enabled": False,
+        "password_manager_leak_detection": False,
+    },
+    "autofill": {"profile_enabled": False, "credit_card_enabled": False},
+}
+
+_CLOSED_MARKERS = (
+    "closed",
+    "target page, context or browser has been closed",
+    "browser has been closed",
+    "context or browser has been closed",
+)
+
+_LOGIN_MESSAGES = {
+    "signed_in": "Bei X angemeldet. Die Sitzung bleibt in diesem Browserprofil gespeichert.",
+    "verification": (
+        "X verlangt eine zusätzliche Bestätigung (2FA-Code, CAPTCHA oder Sicherheitsabfrage). "
+        "Bitte im geöffneten X-Fenster abschließen."
+    ),
+    "pending": (
+        "Zugangsdaten wurden im X-Fenster eingetragen. Bitte dort prüfen und die Anmeldung "
+        "abschließen."
+    ),
+}
+
+# Beschriftungen der X-Anmeldemaske (Deutsch und Englisch).
+_NEXT_LABELS = ("Weiter", "Next")
+_SUBMIT_LABELS = ("Anmelden", "Log in", "Login", "Sign in")
+_VERIFICATION_HINTS = (
+    "bestätigungscode",
+    "verification code",
+    "authentication code",
+    "zwei-faktor",
+    "two-factor",
+    "captcha",
+    "arkose",
+    "ungewöhnliche aktivität",
+    "unusual login activity",
+    "sicherheitsabfrage",
+)
+_LOGIN_FAILURE_HINTS = (
+    "falsches passwort",
+    "wrong password",
+    "incorrect password",
+    "passwort war falsch",
+    "password you entered was incorrect",
+    "konnten wir nicht finden",
+    "could not find your account",
+    "wir konnten dich nicht finden",
+)
 
 
 class XServiceError(RuntimeError):
@@ -53,6 +130,10 @@ class XValidationError(ValueError):
     """Invalid user input for an X action."""
 
 
+class XLoginError(XServiceError):
+    """The direct X login failed; the message never contains the password."""
+
+
 class _DownloadCancelled(Exception):
     pass
 
@@ -64,6 +145,93 @@ def public_error(exc: BaseException | str) -> str:
     text = re.sub(r"(?i)--cookies(?:-from-browser)?\s+\S+", "--cookies <redacted>", text)
     text = re.sub(r"\s+", " ", text)
     return (text[:500] or "Unbekannter X-Fehler.")
+
+
+def redact_secret(text: str, secret: str) -> str:
+    """Remove a password from any text before it is shown, returned or logged."""
+    if not secret or len(secret) < 3:
+        return text
+    return text.replace(secret, "<redacted>")
+
+
+def normalize_login_identifier(value: Any) -> str:
+    """Normalize the e-mail address or user name used for the X login."""
+    if not isinstance(value, str):
+        raise XValidationError("Bitte E-Mail-Adresse oder X-Benutzernamen eingeben.")
+    identifier = value.strip()
+    if identifier.startswith("@"):
+        identifier = identifier[1:].strip()
+    if not identifier:
+        raise XValidationError("Bitte E-Mail-Adresse oder X-Benutzernamen eingeben.")
+    if any(ord(char) < 32 or ord(char) == 127 for char in identifier):
+        raise XValidationError("Die Kennung enthält ungültige Steuerzeichen.")
+    if len(identifier) > MAX_IDENTIFIER_LENGTH:
+        raise XValidationError(
+            f"Die Kennung darf höchstens {MAX_IDENTIFIER_LENGTH} Zeichen haben."
+        )
+    return identifier
+
+
+def normalize_optional_username(value: Any) -> str:
+    """Normalize the optional ``@name`` X asks for during unusual-activity checks."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise XValidationError("Der @Benutzername ist ungültig.")
+    username = value.strip().lstrip("@").strip()
+    if not username:
+        return ""
+    if not _USERNAME_RE.fullmatch(username):
+        raise XValidationError(
+            "Der @Benutzername darf nur Buchstaben, Ziffern und _ enthalten "
+            f"(höchstens {MAX_USERNAME_LENGTH} Zeichen)."
+        )
+    return username
+
+
+def validate_password(value: Any) -> str:
+    """Check the password without ever putting it into an error message."""
+    if not isinstance(value, str) or not value:
+        raise XValidationError("Bitte das X-Passwort eingeben.")
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise XValidationError("Das Passwort enthält ungültige Steuerzeichen.")
+    if len(value) > MAX_PASSWORD_LENGTH:
+        raise XValidationError(
+            f"Das Passwort darf höchstens {MAX_PASSWORD_LENGTH} Zeichen haben."
+        )
+    return value
+
+
+def write_no_password_manager_prefs(session_dir: Path | str) -> Path:
+    """Turn Chromium's password manager off inside the persistent X profile."""
+    profile = Path(session_dir) / "Default"
+    profile.mkdir(parents=True, exist_ok=True)
+    path = profile / "Preferences"
+    data: dict[str, Any] = {}
+    if path.is_file():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
+        except (OSError, ValueError):
+            data = {}
+    for key, value in _NO_PASSWORD_MANAGER_PREFS.items():
+        if isinstance(value, dict):
+            section = data.get(key)
+            if not isinstance(section, dict):
+                section = {}
+            section.update(value)
+            data[key] = section
+        else:
+            data[key] = value
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+def is_browser_closed_error(exc: BaseException | str) -> bool:
+    """Recognize a Playwright error caused by a closed window or context."""
+    text = str(exc).lower()
+    return any(marker in text for marker in _CLOSED_MARKERS)
 
 
 def normalize_search_query(value: Any) -> str:
@@ -330,6 +498,45 @@ class XService:
         result = self._browser_call("open_login", timeout=75)
         return {"ok": True, "browser_open": True, "url": result.get("url", "https://x.com/")}
 
+    def login(self, identifier: Any, password: Any, username: Any = "") -> dict[str, Any]:
+        """Fill X's own login form in the visible browser window.
+
+        The password is only passed through to the form: it is never stored,
+        logged, echoed back or written into an error message.  Everything X
+        asks for on top of it (2FA code, CAPTCHA, security question) stays in
+        the visible window and is answered by the user.
+        """
+        normalized_identifier = normalize_login_identifier(identifier)
+        normalized_username = normalize_optional_username(username)
+        secret = validate_password(password)
+        try:
+            result = self._browser_call(
+                "login",
+                {
+                    "identifier": normalized_identifier,
+                    "username": normalized_username,
+                    "password": secret,
+                },
+                timeout=LOGIN_TIMEOUT_SECONDS + 30,
+            )
+        except XValidationError:
+            raise
+        except XUnavailableError as exc:
+            # Fehlender/geschlossener Browser ist kein Zugangsdatenproblem.
+            raise XUnavailableError(self._map_login_error(exc, secret)) from None
+        except Exception as exc:
+            raise XLoginError(self._map_login_error(exc, secret)) from None
+        finally:
+            secret = ""
+        state = str(result.get("state") or "pending")
+        return {
+            "ok": True,
+            "state": state,
+            "browser_open": self._browser_open,
+            "session_confirmed": state == "signed_in",
+            "message": _LOGIN_MESSAGES.get(state, _LOGIN_MESSAGES["pending"]),
+        }
+
     def start_search(
         self,
         query: Any,
@@ -549,11 +756,16 @@ class XService:
         self._ensure_browser()
         command = _Command(name=name, payload=payload or {})
         self._commands.put(command)
-        if not command.done.wait(timeout):
-            raise XUnavailableError("Die sichtbare X-Browser-Sitzung antwortet nicht.")
-        if command.error is not None:
-            raise command.error
-        return command.result
+        try:
+            if not command.done.wait(timeout):
+                raise XUnavailableError("Die sichtbare X-Browser-Sitzung antwortet nicht.")
+            if command.error is not None:
+                raise command.error
+            return command.result
+        finally:
+            # Der Auftrag kann Zugangsdaten enthalten – sie dürfen nicht länger
+            # als nötig im Speicher stehen bleiben.
+            command.payload.clear()
 
     def _browser_loop(self) -> None:
         context = None
@@ -565,10 +777,20 @@ class XService:
                     "Playwright fehlt. Bitte `pip install -r requirements.txt` ausführen."
                 ) from exc
             self.session_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                write_no_password_manager_prefs(self.session_dir)
+            except OSError:
+                logger.debug(
+                    "Chromium-Profileinstellungen konnten nicht geschrieben werden.",
+                    exc_info=True,
+                )
             with sync_playwright() as playwright:
                 try:
                     context = playwright.chromium.launch_persistent_context(
-                        str(self.session_dir), headless=False, viewport=None
+                        str(self.session_dir),
+                        headless=False,
+                        viewport=None,
+                        args=list(_NO_PASSWORD_MANAGER_ARGS),
                     )
                 except Exception as exc:
                     message = public_error(exc)
@@ -580,6 +802,9 @@ class XService:
                     raise XUnavailableError(message) from exc
                 context.set_default_timeout(10_000)
                 page = context.pages[0] if context.pages else context.new_page()
+                # Schließt der Nutzer das Fenster, wacht die Schleife auf und
+                # beendet sich, statt weiter „Browser geöffnet“ zu melden.
+                context.on("close", self._on_browser_closed)
                 self._browser_open = True
                 self._browser_ready.set()
                 while True:
@@ -588,13 +813,11 @@ class XService:
                         break
                     try:
                         if command.name == "open_login":
-                            page.goto(
-                                "https://x.com/i/flow/login",
-                                wait_until="domcontentloaded",
-                                timeout=60_000,
-                            )
+                            page.goto(_LOGIN_URL, wait_until="commit", timeout=60_000)
                             page.bring_to_front()
-                            command.result = {"url": "https://x.com/i/flow/login"}
+                            command.result = {"url": _LOGIN_URL}
+                        elif command.name == "login":
+                            command.result = self._login_on_page(page, **command.payload)
                         elif command.name == "search":
                             command.result = self._search_visible_page(page, **command.payload)
                         elif command.name == "cookies":
@@ -603,9 +826,10 @@ class XService:
                             raise XServiceError("Unbekannter Browserauftrag.")
                     except Exception as exc:
                         command.error = exc
-                        if "closed" in public_error(exc).lower():
+                        if is_browser_closed_error(public_error(exc)):
                             self._browser_open = False
                     finally:
+                        command.payload.clear()
                         command.done.set()
                     if not self._browser_open:
                         break
@@ -614,6 +838,7 @@ class XService:
             logger.warning("X-Browser nicht verfügbar: %s", self._browser_start_error)
         finally:
             self._browser_open = False
+            self._session_confirmed = False
             self._browser_ready.set()
             if context is not None:
                 try:
@@ -629,7 +854,138 @@ class XService:
                     pending.error = XUnavailableError(
                         self._browser_start_error or "Die X-Browser-Sitzung wurde geschlossen."
                     )
+                    pending.payload.clear()
                     pending.done.set()
+
+    def _on_browser_closed(self, *_args: Any) -> None:
+        """Playwright meldet ein geschlossenes Fenster – Schleife aufwecken."""
+        self._browser_open = False
+        self._session_confirmed = False
+        self._commands.put(None)
+
+    @staticmethod
+    def _visible(locator: Any, timeout: float) -> bool:
+        try:
+            locator.wait_for(state="visible", timeout=timeout)
+            return True
+        except Exception:
+            return False
+
+    def _already_signed_in(self, page: Any) -> bool:
+        """True, sobald X den Anmeldeablauf verlassen hat."""
+        try:
+            url = str(page.url or "")
+        except Exception:
+            return False
+        if not url or url.startswith("about:"):
+            return False
+        if "/login" in url or "/i/flow/" in url:
+            return False
+        self._session_confirmed = True
+        return True
+
+    @staticmethod
+    def _page_text(page: Any) -> str:
+        try:
+            return str(page.locator("body").inner_text(timeout=2_000) or "").lower()
+        except Exception:
+            return ""
+
+    @classmethod
+    def _advance(cls, page: Any, field: Any, labels: tuple[str, ...]) -> None:
+        """Press X's own step button; fall back to Enter inside the field."""
+        for label in labels:
+            button = page.locator(
+                f'button:has-text("{label}"), div[role="button"]:has-text("{label}")'
+            ).first
+            if cls._visible(button, 4_000):
+                try:
+                    button.click(timeout=6_000)
+                    return
+                except Exception:
+                    continue
+        field.press("Enter")
+
+    def _login_on_page(
+        self,
+        page: Any,
+        identifier: str,
+        password: str,
+        username: str = "",
+        *,
+        settle_seconds: float = 25.0,
+    ) -> dict[str, Any]:
+        """Fill X's login form. 2FA/CAPTCHA stay in the visible window."""
+        page.goto(_LOGIN_URL, wait_until="commit", timeout=60_000)
+        page.bring_to_front()
+
+        identifier_field = page.locator(
+            'input[autocomplete="username"], input[name="text"]'
+        ).first
+        if not self._visible(identifier_field, 12_000):
+            # X leitet bereits angemeldete Profile direkt weiter – das ist
+            # kein Fehler, sondern der Idealfall.
+            if self._already_signed_in(page):
+                return {"state": "signed_in"}
+            if not self._visible(identifier_field, 18_000):
+                if self._already_signed_in(page):
+                    return {"state": "signed_in"}
+                raise XLoginError(
+                    "Die X-Anmeldemaske ist nicht erschienen. Bitte im geöffneten Fenster prüfen "
+                    "(eventuell wartet dort eine Sicherheitsabfrage)."
+                )
+        identifier_field.fill(identifier)
+        self._advance(page, identifier_field, _NEXT_LABELS)
+
+        password_field = page.locator(
+            'input[name="password"], input[type="password"]'
+        ).first
+        if not self._visible(password_field, 8_000):
+            # X fragt bei ungewöhnlicher Aktivität zusätzlich den @Namen ab.
+            extra_field = page.locator('input[name="text"]').first
+            if self._visible(extra_field, 4_000):
+                if not username:
+                    return {"state": "verification"}
+                extra_field.fill(username)
+                self._advance(page, extra_field, _NEXT_LABELS)
+            if not self._visible(password_field, 20_000):
+                if self._already_signed_in(page):
+                    return {"state": "signed_in"}
+                text = self._page_text(page)
+                if any(hint in text for hint in _LOGIN_FAILURE_HINTS):
+                    raise XLoginError(
+                        "X hat die Kennung nicht akzeptiert. Bitte E-Mail-Adresse bzw. "
+                        "Benutzernamen prüfen."
+                    )
+                return {"state": "verification"}
+
+        password_field.fill(password)
+        self._advance(page, password_field, _SUBMIT_LABELS)
+        return self._login_outcome(page, settle_seconds)
+
+    def _login_outcome(self, page: Any, settle_seconds: float) -> dict[str, Any]:
+        deadline = time.monotonic() + max(0.0, settle_seconds)
+        while True:
+            try:
+                page.url  # noqa: B018  – löst bei geschlossenem Fenster aus
+            except Exception as exc:
+                if is_browser_closed_error(exc):
+                    raise XUnavailableError(
+                        "Das X-Fenster wurde geschlossen, bevor die Anmeldung fertig war."
+                    ) from None
+                raise
+            if self._already_signed_in(page):
+                return {"state": "signed_in"}
+            text = self._page_text(page)
+            if any(hint in text for hint in _LOGIN_FAILURE_HINTS):
+                raise XLoginError(
+                    "X hat die Zugangsdaten abgelehnt. Bitte Kennung und Passwort prüfen."
+                )
+            if any(hint in text for hint in _VERIFICATION_HINTS):
+                return {"state": "verification"}
+            if time.monotonic() >= deadline:
+                return {"state": "pending"}
+            time.sleep(1.0)
 
     def _search_visible_page(
         self,
@@ -642,26 +998,24 @@ class XService:
     ) -> list[dict[str, Any]]:
         page.goto(
             build_search_url(query, sort, exclude_reposts),
-            wait_until="domcontentloaded",
+            wait_until="commit",
             timeout=60_000,
         )
         if "/login" in page.url or "/i/flow/login" in page.url:
             self._session_confirmed = False
             raise XServiceError(
-                "Die X-Sitzung ist nicht angemeldet oder abgelaufen. Bitte „Bei X anmelden“ öffnen."
+                "Die X-Sitzung ist nicht angemeldet oder abgelaufen. Bitte oben anmelden."
             )
         try:
-            page.locator("article").first.wait_for(state="visible", timeout=15_000)
+            page.locator("article").first.wait_for(state="visible", timeout=20_000)
         except Exception as exc:
-            body = ""
-            try:
-                body = page.locator("body").inner_text(timeout=2_000).lower()
-            except Exception:
-                pass
-            if any(word in body for word in ("log in", "sign in", "anmelden")):
+            body = self._page_text(page)
+            if "/login" in page.url or any(
+                word in body for word in ("log in", "sign in", "anmelden")
+            ):
                 self._session_confirmed = False
                 raise XServiceError(
-                    "Die X-Sitzung ist abgelaufen. Bitte „Bei X anmelden“ öffnen und manuell anmelden."
+                    "Die X-Sitzung ist abgelaufen. Bitte oben erneut bei X anmelden."
                 ) from exc
             raise XServiceError(
                 "X zeigt keine Beitragskarten. Möglicherweise wurde das Layout geändert oder eine Sicherheitsabfrage wartet im Browser."
@@ -904,6 +1258,24 @@ class XService:
                 "`python -m playwright install chromium` ausführen und die Sitzung neu öffnen."
             )
         return f"X-Browserfehler: {message}"
+
+    @staticmethod
+    def _map_login_error(exc: BaseException, secret: str = "") -> str:
+        """Turn any login failure into a message that cannot contain the password."""
+        if isinstance(exc, XServiceError):
+            return redact_secret(public_error(exc), secret)
+        message = redact_secret(public_error(exc), secret)
+        if is_browser_closed_error(message):
+            return (
+                "Das X-Fenster wurde geschlossen. Bitte „X-Browser öffnen“ klicken und die "
+                "Anmeldung erneut starten."
+            )
+        if "timeout" in message.lower():
+            return (
+                "Die X-Anmeldemaske hat nicht rechtzeitig reagiert. Bitte im geöffneten Fenster "
+                "nachsehen – dort wartet eventuell eine Sicherheitsabfrage."
+            )
+        return f"Die Anmeldung bei X ist fehlgeschlagen: {message}"
 
     @staticmethod
     def _map_download_error(exc: BaseException) -> str:

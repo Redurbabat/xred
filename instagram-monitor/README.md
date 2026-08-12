@@ -39,10 +39,33 @@ Die Browser-Oberfläche (`python web.py`) ist der bequemste Weg. Highlights:
 
 Der Navigationspunkt **𝕏 / X Videos** arbeitet ohne Bearer Token und ohne
 kostenpflichtigen Entwicklerzugang. Beim Öffnen der Seite wird noch keine
-X-Anfrage ausgelöst. Erst ein Klick auf „Bei X anmelden / Sitzung öffnen“
-startet ein sichtbares Chromium-Fenster; dort meldest du dich selbst an und
-erledigst gegebenenfalls 2FA, CAPTCHA oder Sicherheitsabfragen. Die Anwendung
-fragt dein X-Passwort niemals ab und gibt Cookies weder über APIs noch Logs aus.
+X-Anfrage ausgelöst.
+
+Für die Anmeldung gibt es zwei Wege, beide führen in ein sichtbares
+Chromium-Fenster auf diesem PC:
+
+* **Bei X anmelden** – du gibst E-Mail-Adresse oder Benutzernamen, optional
+  deinen `@Benutzernamen` und dein Passwort direkt in der Oberfläche ein. Die
+  App trägt beides in das echte X-Formular im sichtbaren Fenster ein.
+* **X-Browser öffnen** – öffnet nur das Fenster, du tippst dort selbst.
+
+Wie die Zugangsdaten behandelt werden:
+
+* Das Passwort wird **nicht gespeichert** – weder in der Datenbank noch in
+  einer Datei, einem Cookie oder im Browserprofil.
+* Es wird **nicht protokolliert**: Es taucht in keinem Log, in keiner
+  Fehlermeldung und in keiner API-Antwort auf.
+* Der Passwortmanager von Chromium ist im X-Profil abgeschaltet, es erscheint
+  also kein „Passwort speichern?“-Dialog.
+* **2FA-Code, CAPTCHA und Sicherheitsabfragen** beantwortest immer du selbst
+  im sichtbaren Fenster – die App tippt sie nicht und liest sie nicht aus.
+* Der Passwort-Endpunkt (`POST /api/x/login`) nimmt ausschließlich Anfragen
+  **vom PC selbst** an. Ein Handy oder Tablet im WLAN bekommt HTTP 403 –
+  auch mit gültigem Zugangscode. Zusätzlich schützen ein Token gegen CSRF
+  sowie Prüfungen von `Origin`, `Referer` und `Host` (gegen DNS-Rebinding).
+* Nur die X-Sitzungscookies bleiben – wie in jedem Browser – im lokalen
+  Chromium-Profil unter `data/x_session/` erhalten. Cookies werden weder über
+  APIs noch über Logs ausgegeben.
 
 Unterstützt werden Hashtags, Wörter und Phrasen, 1–50 Ergebnisse, „Neueste“
 oder „Top“, optional ohne Reposts, Abbruch der Suche sowie Einzel-, Auswahl-
@@ -69,7 +92,9 @@ die erforderlichen Rechte besitzt, und beachte die X-Nutzungsbedingungen.
 Playwright/Chromium ist in der Chaquopy-Android-App nicht verfügbar. Dort zeigt
 die X-Seite deshalb nur den Hinweis, den Server auf dem PC zu starten und vom
 Handy zu öffnen; die bestehenden Instagram-Funktionen und die Paket-ID
-`de.redur.igmonitor` bleiben unverändert.
+`de.redur.igmonitor` bleiben unverändert. Öffnest du die Oberfläche im
+Handy-Modus vom Tablet, blendet die X-Seite das Passwortfeld aus – die
+Anmeldung gehört an den PC, an dem das Browserfenster steht.
 
 ## Funktionen (Desktop-App)
 
