@@ -299,3 +299,104 @@ def test_api_never_returns_cookie_or_token_values(api_env, monkeypatch):
     assert "abc123" not in body
     assert "supersecret" not in body
     assert "qwerty" not in body
+
+
+# ----------------------------------------------------------------------
+# Herkunftsprüfung: Suche, Download und „Browser öffnen“ dürfen nicht von
+# einer fremden Webseite auslösbar sein – müssen aber im Handy-Modus über
+# das WLAN weiter funktionieren. Nur das Passwort ist PC-exklusiv.
+# ----------------------------------------------------------------------
+
+X_ACTION_ROUTES = [
+    ("/api/x/login/open", None),
+    ("/api/x/search", {"query": "#test", "limit": 5}),
+    ("/api/x/search/cancel", None),
+    ("/api/x/download", {"post_id": "1234567890"}),
+    ("/api/x/download-selected", {"post_ids": []}),
+    ("/api/x/download/cancel", None),
+]
+
+
+@pytest.mark.parametrize(("route", "body"), X_ACTION_ROUTES)
+@pytest.mark.parametrize("origin", ["https://boese.example", "null"])
+def test_x_actions_reject_a_foreign_origin(api_env, route, body, origin):
+    client, _db, _service = api_env
+    kwargs = {"headers": {"Origin": origin}}
+    if body is not None:
+        kwargs["json"] = body
+    response = client.post(route, **kwargs)
+    assert response.status_code == 403, route
+    assert "fremden Seite" in response.get_json()["error"]
+
+
+@pytest.mark.parametrize(("route", "body"), X_ACTION_ROUTES)
+def test_x_actions_reject_a_cross_site_fetch_marker(api_env, route, body):
+    client, _db, _service = api_env
+    kwargs = {"headers": {"Sec-Fetch-Site": "cross-site"}}
+    if body is not None:
+        kwargs["json"] = body
+    assert client.post(route, **kwargs).status_code == 403, route
+
+
+def test_search_and_download_still_work_from_a_phone_in_the_lan(tmp_path: Path):
+    """Der wichtigste Test des Umbaus: Der Handy-Modus bleibt heil.
+
+    Eine reine localhost-Prüfung wäre hier bequem gewesen und hätte genau
+    diesen Fall zerstört – vom Tablet aus soll gesucht und geladen werden
+    können, nur das X-Passwort bleibt dem PC vorbehalten.
+    """
+    db = Database(tmp_path / "d.db")
+    settings = Settings(db, default_download_dir=str(tmp_path / "downloads"))
+    service = XService(db, settings, tmp_path / "session", browser_search=lambda **_k: [])
+    client = create_app(db, settings, _Downloader(), access_key="geheim", x_service=service).test_client()
+    client.set_cookie("igmon_key", "geheim", domain="192.168.1.50")
+    lan = {"REMOTE_ADDR": "192.168.1.42"}
+
+    started = client.post(
+        "http://192.168.1.50:8756/api/x/search",
+        json={"query": "#test", "limit": 5},
+        headers={"Origin": "http://192.168.1.50:8756", "Sec-Fetch-Site": "same-origin"},
+        environ_base=lan,
+    )
+    assert started.status_code == 202
+
+    # Dasselbe Gerät bekommt für das Passwort weiterhin 403.
+    denied = client.post(
+        "http://192.168.1.50:8756/api/x/login",
+        json={"identifier": "name@example.com", "password": TEST_PASSWORD},
+        headers={"Origin": "http://192.168.1.50:8756"},
+        environ_base=lan,
+    )
+    assert denied.status_code == 403
+    assert denied.get_json()["local_only"] is True
+    db.close()
+
+
+def test_a_foreign_page_cannot_use_a_valid_access_cookie(tmp_path: Path):
+    db = Database(tmp_path / "d.db")
+    settings = Settings(db, default_download_dir=str(tmp_path / "downloads"))
+    service = XService(db, settings, tmp_path / "session", browser_search=lambda **_k: [])
+    client = create_app(db, settings, _Downloader(), access_key="geheim", x_service=service).test_client()
+    client.set_cookie("igmon_key", "geheim", domain="192.168.1.50")
+    response = client.post(
+        "http://192.168.1.50:8756/api/x/search",
+        json={"query": "#test"},
+        headers={"Origin": "https://boese.example"},
+        environ_base={"REMOTE_ADDR": "192.168.1.42"},
+    )
+    assert response.status_code == 403
+    assert "fremden Seite" in response.get_json()["error"]
+    db.close()
+
+
+@pytest.mark.parametrize(
+    "route", ["/api/x/search", "/api/x/download", "/api/x/download-selected"]
+)
+def test_a_json_array_is_a_bad_request_not_a_server_error(api_env, route):
+    # Vorher: data.get(...) auf einer Liste → AttributeError → HTTP 503 mit
+    # internem Python-Text in der Oberfläche.
+    client, _db, _service = api_env
+    response = client.post(route, json=[1, 2])
+    assert response.status_code == 400
+    body = response.get_data(as_text=True)
+    assert "object has no attribute" not in body

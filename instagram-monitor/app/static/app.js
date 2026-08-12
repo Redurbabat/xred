@@ -1,6 +1,10 @@
 "use strict";
 const $ = id => document.getElementById(id);
-const esc = s => { const d=document.createElement("div"); d.textContent=s??""; return d.innerHTML; };
+// textContent→innerHTML maskiert nur & < > – NICHT die Anführungszeichen.
+// Der Wert wird aber auch in Attribute gesetzt (src, href, title); ohne die
+// beiden Ersetzungen könnte ein Wert dort aus dem Attribut ausbrechen.
+const esc = s => { const d=document.createElement("div"); d.textContent=s??"";
+  return d.innerHTML.replace(/"/g,"&quot;").replace(/'/g,"&#39;"); };
 const fmt = n => { n=+n||0; return n>=1e6 ? (n/1e6).toFixed(1).replace(".",",")+" Mio."
   : n>=1e4 ? (n/1e3).toFixed(1).replace(".",",")+" Tsd." : n.toLocaleString("de-DE"); };
 
@@ -2264,6 +2268,10 @@ async function xPollJobs(){
     api("/api/x/search/status"), api("/api/x/download/status")
   ]);
   if(viewMode!=="x") return;
+  // Netzwerkaussetzer: NICHT aufgeben. Sonst verschwinden die Abbrechen-
+  // Knöpfe, der Auftrag läuft unsichtbar weiter und jeder neue Versuch
+  // liefert 409, bis er von allein fertig ist. Einfach später nachsehen.
+  if(search.status===0 || download.status===0){ xSchedulePoll(3000); return; }
   const s=search.data||{}, d=download.data||{};
   if(s.items && (s.items.length || s.finished)){ xResults=s.items; xRenderResults(); }
   if(d.items){
@@ -2274,6 +2282,9 @@ async function xPollJobs(){
   const notice=(s.error||d.error||((s.finished&&!s.running)?s.message:"")||((d.finished&&!d.running)?d.message:""));
   if(notice && notice!==xLastNotice){ xLastNotice=notice; toast(notice,(s.error||d.error)?"err":"ok"); }
   if(s.running||d.running) xSchedulePoll();
+  // Auftrag zu Ende: einmal den Sitzungsstatus nachziehen. Nur so bemerkt
+  // die Anzeige „Browser geöffnet“ jemals, dass das Fenster zu ist.
+  else if(s.finished||d.finished) xLoadStatus();
 }
 
 function xApplyJobs(search,download){

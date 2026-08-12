@@ -20,7 +20,7 @@ import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 if TYPE_CHECKING:
     from .database import Database
@@ -32,6 +32,10 @@ MAX_QUERY_LENGTH = 120
 MAX_RESULTS = 50
 MAX_SCROLL_ROUNDS = 20
 MAX_SEARCH_SECONDS = 180
+# Taktgeber der Browserschleife im Leerlauf. Kurz genug, dass ein zugeklicktes
+# Fenster praktisch sofort auffällt, und praktisch kostenlos: Der Ping erzeugt
+# keinen Verkehr zum Browser, nur ein setTimeout im Playwright-Treiber.
+_IDLE_TICK_SECONDS = 0.75
 MAX_IDENTIFIER_LENGTH = 254
 MAX_USERNAME_LENGTH = 15
 MAX_PASSWORD_LENGTH = 256
@@ -72,11 +76,16 @@ _NO_PASSWORD_MANAGER_PREFS: dict[str, Any] = {
     "autofill": {"profile_enabled": False, "credit_card_enabled": False},
 }
 
+# Bewusst KEIN nacktes „closed“: Sonst gilt auch net::ERR_CONNECTION_CLOSED –
+# ein vorübergehender Netzwerkfehler – als geschlossenes Fenster, und die
+# komplette Chromium-Sitzung würde dafür abgeräumt. „has been closed“ deckt
+# alle Playwright-Formulierungen ab („Target page, context or browser has
+# been closed“, „Browser has been closed“, „Target page has been closed“).
 _CLOSED_MARKERS = (
-    "closed",
-    "target page, context or browser has been closed",
-    "browser has been closed",
-    "context or browser has been closed",
+    "has been closed",
+    "target closed",
+    "browser has disconnected",
+    "event loop is closed",
 )
 
 _LOGIN_MESSAGES = {
@@ -111,6 +120,9 @@ _VERIFICATION_HINTS = (
 # Pfade, die NICHT „angemeldet“ bedeuten: der Anmeldeablauf selbst sowie die
 # Entsperr- und Rückfrageseiten, die X bei eingeschränkten Konten zeigt. Ohne
 # sie würde eine solche Seite als fertige Anmeldung durchgehen.
+# Hosts, die wirklich zu X gehören. Eine Stelle für beide Prüfungen:
+# Beitragslinks (normalize_post_url) und „bin ich angemeldet?“.
+_X_HOSTS = frozenset({"x.com", "www.x.com", "twitter.com", "www.twitter.com"})
 _NOT_SIGNED_IN_PATHS = (
     "/login",
     "/i/flow/",
@@ -137,8 +149,14 @@ class XUnavailableError(XServiceError):
     """A desktop dependency or the X browser is unavailable."""
 
 
-class XValidationError(ValueError):
-    """Invalid user input for an X action."""
+class XValidationError(XServiceError, ValueError):
+    """Invalid user input for an X action.
+
+    Erbt von beiden: ``XServiceError``, damit ``_map_browser_error`` ein
+    Datenproblem als Klartext meldet statt als „X-Browserfehler“, und
+    ``ValueError``, damit die ``except (TypeError, ValueError)``-Zweige in
+    web.py weiterhin sauber mit HTTP 400 antworten.
+    """
 
 
 class XLoginError(XServiceError):
@@ -293,7 +311,7 @@ def normalize_post_url(value: Any) -> str:
     host = (parsed.hostname or "").lower().rstrip(".")
     if (
         parsed.scheme.lower() != "https"
-        or host not in {"x.com", "www.x.com", "twitter.com", "www.twitter.com"}
+        or host not in _X_HOSTS
         or parsed.username
         or parsed.password
         or port not in {None, 443}
@@ -347,22 +365,58 @@ def build_search_url(query: str, sort: str, exclude_reposts: bool) -> str:
 
 
 def _safe_preview_url(value: Any) -> str:
+    """Nur https-Vorschaubilder von X – und nur neu zusammengesetzt.
+
+    Der Originalstring wird bewusst NICHT zurückgegeben: Er kann hinter dem
+    geprüften Hostnamen noch Anführungszeichen oder Steuerzeichen tragen, mit
+    denen der Wert im Frontend aus einem Attribut ausbrechen könnte. Der Umbau
+    über urlunsplit wirft alles weg, was nicht Teil einer URL ist.
+    """
     try:
         parsed = urlsplit(str(value or ""))
     except ValueError:
         return ""
-    if parsed.scheme == "https" and (parsed.hostname or "").lower() in _PREVIEW_HOSTS:
-        return str(value)
-    return ""
+    if parsed.scheme != "https" or (parsed.hostname or "").lower() not in _PREVIEW_HOSTS:
+        return ""
+    if any(ord(char) < 32 or char in '"\'<>' for char in str(value)):
+        return ""
+    return urlunsplit(parsed)
 
 
 @dataclass
 class _Command:
+    """Ein Browserauftrag samt Übergabe zwischen Aufrufer und Browser-Thread.
+
+    ``abandon`` und ``claim`` verhindern, dass ein nach Zeitüberschreitung
+    aufgegebener Auftrag später doch noch ausgeführt wird – mit dann bereits
+    geleerten Nutzdaten. Ohne diesen Handschlag navigierte ein abgelaufenes
+    ``open_login`` das sichtbare Fenster mitten in eine laufende Suche hinein.
+    """
+
     name: str
     payload: dict[str, Any] = field(default_factory=dict)
     done: threading.Event = field(default_factory=threading.Event)
     result: Any = None
     error: Optional[BaseException] = None
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _claimed: bool = False
+    _abandoned: bool = False
+
+    def abandon(self) -> None:
+        """Aufrufer gibt auf. Läuft der Auftrag schon, bleiben die Daten."""
+        with self._lock:
+            if not self._claimed:
+                self._abandoned = True
+                self.payload.clear()
+
+    def claim(self) -> bool:
+        """True, wenn der Browser-Thread den Auftrag ausführen darf."""
+        with self._lock:
+            if self._abandoned:
+                self.payload.clear()
+                return False
+            self._claimed = True
+            return True
 
 
 class _JobState:
@@ -548,6 +602,37 @@ class XService:
             "message": _LOGIN_MESSAGES.get(state, _LOGIN_MESSAGES["pending"]),
         }
 
+    def _finish_job(self, job: _JobState, release: Callable[[], None], **values: Any) -> None:
+        """Endzustand veröffentlichen und dabei die Sperre freigeben.
+
+        Beides muss unter EINEM gehaltenen Job-Lock passieren. Sonst sieht die
+        Oberfläche „fertig“, während die Sperre noch liegt, startet sofort den
+        nächsten Auftrag und bekommt dafür HTTP 409 – auf den eigenen Klick hin.
+        Die umgekehrte Reihenfolge hilft nicht: ``try_start`` scheiterte dann an
+        ``running == True``.
+        """
+
+        def apply(state: _JobState) -> None:
+            for key, value in values.items():
+                setattr(state, key, value)
+            state.running = False
+            state.finished = True
+            release()
+
+        job.mutate(apply)
+
+    @staticmethod
+    def _once(release: Callable[[], None]) -> Callable[[], None]:
+        """Kapselt eine Freigabe, die höchstens einmal wirken darf."""
+        done = threading.Event()
+
+        def guarded() -> None:
+            if not done.is_set():
+                done.set()
+                release()
+
+        return guarded
+
     def start_search(
         self,
         query: Any,
@@ -564,6 +649,8 @@ class XService:
             self._operation_lock.release()
             return False
 
+        release = self._once(self._operation_lock.release)
+
         def run() -> None:
             try:
                 results = self._perform_search(
@@ -574,19 +661,28 @@ class XService:
                     self.search_job.cancel_event,
                 )
                 unique: dict[str, dict[str, Any]] = {}
+                unreadable = 0
                 for item in results:
-                    canonical_url = normalize_post_url(item.get("post_url"))
+                    # Pro Element abfangen: Eine einzige kaputte Karte hat
+                    # früher die komplette Suche mit null Treffern beendet.
+                    try:
+                        canonical_url = normalize_post_url(item.get("post_url"))
+                    except XValidationError:
+                        unreadable += 1
+                        continue
                     post_id = extract_post_id(canonical_url)
                     item["post_id"] = post_id
                     item["post_url"] = canonical_url
                     unique[post_id] = item
+                if unreadable:
+                    logger.info("%d X-Beitragskarte(n) ohne brauchbaren Link übersprungen.", unreadable)
                 results = list(unique.values())[:normalized_limit]
                 for item in results:
                     self.db.upsert_x_post(item)
                     item["downloaded"] = self.db.is_x_post_downloaded(item["post_id"])
-                self.search_job.update(
-                    running=False,
-                    finished=True,
+                self._finish_job(
+                    self.search_job,
+                    release,
                     cancelled=self.search_job.cancel_event.is_set(),
                     found=len(results),
                     done=len(results),
@@ -600,9 +696,9 @@ class XService:
             except Exception as exc:
                 message = self._map_browser_error(exc)
                 logger.warning("X-Suche fehlgeschlagen: %s", message)
-                self.search_job.update(running=False, finished=True, error=message, message="")
+                self._finish_job(self.search_job, release, error=message, message="")
             finally:
-                self._operation_lock.release()
+                release()
 
         self.search_job.thread = threading.Thread(target=run, daemon=True, name="x-search")
         self.search_job.thread.start()
@@ -646,8 +742,18 @@ class XService:
             self._operation_lock.release()
             return False
 
+        release = self._once(self._operation_lock.release)
+
         def run() -> None:
             cookie_file: Optional[Path] = None
+
+            def _drop_cookie_file() -> None:
+                if cookie_file is not None:
+                    try:
+                        cookie_file.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+
             try:
                 cookie_file = self._export_cookie_file()
                 rows_by_id = {row["post_id"]: row for row in self.db.get_x_posts(ids)}
@@ -685,9 +791,12 @@ class XService:
                     self.download_job.update(done=index + 1)
                 snapshot = self.download_job.snapshot()
                 cancelled = self.download_job.cancel_event.is_set()
-                self.download_job.update(
-                    running=False,
-                    finished=True,
+                # Cookie-Datei VOR der Freigabe entfernen: Danach darf sofort
+                # der nächste Auftrag starten und eine neue schreiben.
+                _drop_cookie_file()
+                self._finish_job(
+                    self.download_job,
+                    release,
                     cancelled=cancelled,
                     current="",
                     message=(
@@ -702,14 +811,11 @@ class XService:
             except Exception as exc:
                 message = self._map_download_error(exc)
                 logger.warning("X-Downloadauftrag fehlgeschlagen: %s", message)
-                self.download_job.update(running=False, finished=True, error=message, message="")
+                _drop_cookie_file()
+                self._finish_job(self.download_job, release, error=message, message="")
             finally:
-                if cookie_file is not None:
-                    try:
-                        cookie_file.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-                self._operation_lock.release()
+                _drop_cookie_file()
+                release()
 
         self.download_job.thread = threading.Thread(target=run, daemon=True, name="x-download")
         self.download_job.thread.start()
@@ -746,29 +852,59 @@ class XService:
             timeout=MAX_SEARCH_SECONDS + 45,
         )
 
-    def _ensure_browser(self) -> None:
+    def _ensure_browser(self) -> "queue.Queue[_Command | None]":
+        """Sorgt für eine lebende Sitzung und liefert deren Auftragsschlange.
+
+        Es genügt nicht, den Thread auf ``is_alive()`` zu prüfen: Nach einem
+        zugeklickten Fenster lebt er noch kurz, während er sein ``finally``
+        abarbeitet. Deshalb zählt zusätzlich ``_browser_open``, und der alte
+        Thread wird abgewartet, bevor ein neuer startet – sonst liefen zwei
+        ``launch_persistent_context`` auf dasselbe Profilverzeichnis.
+        """
         with self._browser_lock:
-            if self._browser_thread is not None and self._browser_thread.is_alive():
-                return
+            if (
+                self._browser_thread is not None
+                and self._browser_thread.is_alive()
+                and self._browser_open
+            ):
+                return self._commands
+            old = self._browser_thread
+            if old is not None and old.is_alive():
+                old.join(10)
             self._browser_ready.clear()
             self._browser_start_error = ""
-            self._browser_thread = threading.Thread(
-                target=self._browser_loop, daemon=True, name="x-browser"
+            # Frische Schlange je Sitzung: Ein Auftrag kann damit strukturell
+            # nicht mehr aus der alten in die neue Sitzung durchrutschen.
+            commands: "queue.Queue[_Command | None]" = queue.Queue()
+            self._commands = commands
+            thread = threading.Thread(
+                target=self._browser_loop, args=(commands,), daemon=True, name="x-browser"
             )
-            self._browser_thread.start()
+            try:
+                thread.start()
+            except RuntimeError as exc:
+                # Ohne diesen Zweig bliebe _browser_ready ungesetzt und jeder
+                # weitere Aufruf liefe 45 Sekunden ins Leere.
+                self._browser_thread = None
+                self._browser_ready.set()
+                raise XUnavailableError(public_error(exc)) from None
+            self._browser_thread = thread
         if not self._browser_ready.wait(45):
             raise XUnavailableError("Chromium konnte nicht innerhalb von 45 Sekunden gestartet werden.")
         if self._browser_start_error:
             raise XUnavailableError(self._browser_start_error)
+        return commands
 
     def _browser_call(
         self, name: str, payload: Optional[dict[str, Any]] = None, timeout: float = 30
     ) -> Any:
-        self._ensure_browser()
+        commands = self._ensure_browser()
         command = _Command(name=name, payload=payload or {})
-        self._commands.put(command)
+        commands.put(command)
         try:
             if not command.done.wait(timeout):
+                # Aufgeben, damit der Auftrag später nicht doch noch losläuft.
+                command.abandon()
                 raise XUnavailableError("Die sichtbare X-Browser-Sitzung antwortet nicht.")
             if command.error is not None:
                 raise command.error
@@ -778,7 +914,7 @@ class XService:
             # als nötig im Speicher stehen bleiben.
             command.payload.clear()
 
-    def _browser_loop(self) -> None:
+    def _browser_loop(self, commands: "queue.Queue[_Command | None]") -> None:
         context = None
         try:
             try:
@@ -818,32 +954,7 @@ class XService:
                 context.on("close", self._on_browser_closed)
                 self._browser_open = True
                 self._browser_ready.set()
-                while True:
-                    command = self._commands.get()
-                    if command is None:
-                        break
-                    try:
-                        if command.name == "open_login":
-                            page.goto(_LOGIN_URL, wait_until="commit", timeout=60_000)
-                            page.bring_to_front()
-                            command.result = {"url": _LOGIN_URL}
-                        elif command.name == "login":
-                            command.result = self._login_on_page(page, **command.payload)
-                        elif command.name == "search":
-                            command.result = self._search_visible_page(page, **command.payload)
-                        elif command.name == "cookies":
-                            command.result = context.cookies(["https://x.com", "https://twitter.com"])
-                        else:
-                            raise XServiceError("Unbekannter Browserauftrag.")
-                    except Exception as exc:
-                        command.error = exc
-                        if is_browser_closed_error(public_error(exc)):
-                            self._browser_open = False
-                    finally:
-                        command.payload.clear()
-                        command.done.set()
-                    if not self._browser_open:
-                        break
+                self._serve_commands(context, page, commands)
         except Exception as exc:
             self._browser_start_error = self._map_browser_error(exc)
             logger.warning("X-Browser nicht verfügbar: %s", self._browser_start_error)
@@ -858,7 +969,7 @@ class XService:
                     pass
             while True:
                 try:
-                    pending = self._commands.get_nowait()
+                    pending = commands.get_nowait()
                 except queue.Empty:
                     break
                 if pending is not None:
@@ -867,6 +978,87 @@ class XService:
                     )
                     pending.payload.clear()
                     pending.done.set()
+
+    def _serve_commands(
+        self, context: Any, page: Any, commands: "queue.Queue[_Command | None]"
+    ) -> None:
+        """Arbeitet Browseraufträge ab und hält dabei die Ereignisse am Laufen.
+
+        Der Takt ist nötig, weil Playwrights Sync-API Ereignisse ausschließlich
+        zustellt, während der Thread in einem Playwright-Aufruf steckt. Würde
+        hier ohne Zeitgrenze auf die Schlange gewartet, bliebe ein zugeklicktes
+        Fenster im Leerlauf unbemerkt – die Oberfläche meldete weiter „Browser
+        geöffnet“ und der nächste Klick liefe auf eine tote Seite.
+        """
+        while True:
+            try:
+                command = commands.get(timeout=_IDLE_TICK_SECONDS)
+            except queue.Empty:
+                page = self._pump_events(context, page)
+                if page is None:
+                    break
+                continue
+            if command is None:
+                break
+            if not command.claim():
+                continue  # Aufrufer hat aufgegeben – nicht mehr ausführen.
+            try:
+                if command.name == "open_login":
+                    page.goto(_LOGIN_URL, wait_until="commit", timeout=60_000)
+                    page.bring_to_front()
+                    command.result = {"url": _LOGIN_URL}
+                elif command.name == "login":
+                    command.result = self._login_on_page(page, **command.payload)
+                elif command.name == "search":
+                    command.result = self._search_visible_page(page, **command.payload)
+                elif command.name == "cookies":
+                    command.result = context.cookies(["https://x.com", "https://twitter.com"])
+                else:
+                    raise XServiceError("Unbekannter Browserauftrag.")
+            except Exception as exc:
+                command.error = exc
+                if is_browser_closed_error(public_error(exc)):
+                    self._browser_open = False
+            finally:
+                command.payload.clear()
+                command.done.set()
+            if not self._browser_open:
+                break
+
+    def _pump_events(self, context: Any, page: Any) -> Any:
+        """Stellt anstehende Playwright-Ereignisse zu. None = Sitzung ist tot.
+
+        ``page.wait_for_timeout`` ist bewusst gewählt: Es ist ein echter, den
+        Ereignisverteiler antreibender Aufruf, löst auf der Treiberseite aber
+        nur ein ``setTimeout`` aus – kein CDP-Verkehr, kein Renderer. Ein Ping
+        über ``context.pages`` oder ``is_closed()`` sähe zwar nach einer Lösung
+        aus, treibt den Verteiler aber gar nicht an und würde nichts bemerken.
+        """
+        try:
+            page.wait_for_timeout(0)
+        except Exception as exc:
+            if not is_browser_closed_error(public_error(exc)):
+                return page  # z. B. ein Netzwerkfehler – die Sitzung lebt.
+            if self._context_closed(context):
+                return None
+            # Nur der Tab war zu: weitermachen statt die Sitzung aufzugeben.
+            try:
+                return context.pages[0] if context.pages else context.new_page()
+            except Exception:
+                return None
+        if self._context_closed(context):
+            return None
+        return page
+
+    @staticmethod
+    def _context_closed(context: Any) -> bool:
+        """True, wenn der Browserkontext keine Seite mehr hat oder zu ist."""
+        try:
+            if getattr(context, "is_closed", None) is not None and context.is_closed():
+                return True
+            return not context.pages
+        except Exception:
+            return True
 
     def _on_browser_closed(self, *_args: Any) -> None:
         """Playwright meldet ein geschlossenes Fenster – Schleife aufwecken."""
@@ -883,12 +1075,29 @@ class XService:
             return False
 
     def _already_signed_in(self, page: Any) -> bool:
-        """True, sobald X den Anmeldeablauf verlassen hat."""
+        """True, sobald X den Anmeldeablauf mit einer echten Seite verlassen hat.
+
+        Die Prüfung ist bewusst positiv: Früher galt alles als angemeldet, was
+        nur nicht nach Anmeldeseite aussah – auch ``chrome-error://`` nach einem
+        Navigationsfehler und ``https://x.com/`` selbst, also ausgerechnet die
+        AUSGELOGGTE Startseite, auf die X nach abgelehnten Zugangsdaten
+        zurückwirft.
+        """
         try:
             url = str(page.url or "")
         except Exception:
             return False
-        if not url or url.startswith("about:"):
+        if not url:
+            return False
+        try:
+            parsed = urlsplit(url)
+        except ValueError:
+            return False
+        if parsed.scheme != "https":
+            return False
+        if (parsed.hostname or "").lower().rstrip(".") not in _X_HOSTS:
+            return False
+        if parsed.path in ("", "/"):
             return False
         if any(path in url for path in _NOT_SIGNED_IN_PATHS):
             return False
@@ -1115,14 +1324,30 @@ class XService:
             logger.debug("Eine sichtbare X-Beitragskarte konnte nicht gelesen werden.", exc_info=True)
             return None
 
+    def _note_missing_cookies(self, reason: str) -> None:
+        """Hinweis in den Auftragszustand schreiben, statt zu schweigen."""
+        self.download_job.update(
+            message=f"{reason} – der Download läuft ohne Anmeldung und kann fehlschlagen."
+        )
+
     def _export_cookie_file(self) -> Optional[Path]:
+        """Cookies für yt-dlp ablegen. None heißt: ohne Anmeldung laden.
+
+        Der Fehlschlag wird sichtbar gemacht. Vorher lief der Download in
+        diesem Fall stillschweigend ohne Anmeldung weiter und scheiterte an
+        jedem Beitrag mit einer irreführenden yt-dlp-Meldung.
+        """
         if not self._browser_open:
+            self._note_missing_cookies("Die X-Sitzung ist nicht geöffnet")
             return None
         try:
             cookies = self._browser_call("cookies", timeout=15)
-        except Exception:
+        except Exception as exc:
+            logger.warning("X-Cookies konnten nicht gelesen werden: %s", public_error(exc))
+            self._note_missing_cookies("Die X-Cookies konnten nicht gelesen werden")
             return None
         if not cookies:
+            self._note_missing_cookies("Die X-Sitzung hat keine Cookies geliefert")
             return None
         self.session_dir.mkdir(parents=True, exist_ok=True)
         path = self.session_dir / ".yt-dlp-cookies.txt"
@@ -1263,9 +1488,18 @@ class XService:
         lower = message.lower()
         if "playwright" in lower and "install" in lower:
             return message
-        if "executable" in lower or "browser has been closed" in lower:
+        # Ein zugeklicktes Fenster ist KEIN Installationsproblem. Diese
+        # Unterscheidung muss vor dem Chromium-Hinweis stehen, sonst wird der
+        # Nutzer zur Neuinstallation aufgefordert, weil er ein Fenster
+        # geschlossen hat.
+        if is_browser_closed_error(message):
             return (
-                "Playwright-Chromium fehlt oder wurde geschlossen. Bitte einmalig "
+                "Das X-Fenster wurde geschlossen. Beim nächsten Versuch öffnet es "
+                "sich automatisch neu."
+            )
+        if "executable" in lower:
+            return (
+                "Playwright-Chromium fehlt oder startet nicht. Bitte einmalig "
                 "`python -m playwright install chromium` ausführen und die Sitzung neu öffnen."
             )
         return f"X-Browserfehler: {message}"
