@@ -576,7 +576,11 @@ def create_app(
         if not request.is_json:
             return jsonify(error="Ungültiges Anfrageformat."), 403
         sent = request.headers.get("X-CSRF-Token", "")
-        if not sent or not secrets.compare_digest(sent, _x_csrf_token):
+        # isascii(): Werkzeug liest Kopfzeilen als Latin-1, ein Byte ab 0x80
+        # wird also zu einem Nicht-ASCII-Zeichen. compare_digest würde damit
+        # mit TypeError abbrechen (HTTP 500) – das echte Token ist reines
+        # ASCII, ein solcher Wert ist deshalb schlicht falsch.
+        if not sent or not sent.isascii() or not secrets.compare_digest(sent, _x_csrf_token):
             return jsonify(
                 error="Sicherheitsprüfung fehlgeschlagen. Bitte die Seite neu laden (F5).",
             ), 403

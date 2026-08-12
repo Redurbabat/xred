@@ -196,6 +196,9 @@ def test_password_endpoint_requires_the_token(api_env, monkeypatch):
     )
     assert _login(client, token="").status_code == 403
     assert _login(client, token="falsches-token").status_code == 403
+    # Kopfzeilen kommen als Latin-1 an: Ein Umlaut darf 403 ergeben – und
+    # nicht compare_digest mit TypeError in einen HTTP 500 laufen lassen.
+    assert _login(client, token="töken-mit-umlaut").status_code == 403
 
 
 def test_password_endpoint_rejects_foreign_origin_and_host(api_env, monkeypatch):

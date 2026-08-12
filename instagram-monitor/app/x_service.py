@@ -105,6 +105,17 @@ _VERIFICATION_HINTS = (
     "ungewöhnliche aktivität",
     "unusual login activity",
     "sicherheitsabfrage",
+    "deine identität",
+    "your identity",
+)
+# Pfade, die NICHT „angemeldet“ bedeuten: der Anmeldeablauf selbst sowie die
+# Entsperr- und Rückfrageseiten, die X bei eingeschränkten Konten zeigt. Ohne
+# sie würde eine solche Seite als fertige Anmeldung durchgehen.
+_NOT_SIGNED_IN_PATHS = (
+    "/login",
+    "/i/flow/",
+    "/account/access",
+    "/account/suspended",
 )
 _LOGIN_FAILURE_HINTS = (
     "falsches passwort",
@@ -879,7 +890,7 @@ class XService:
             return False
         if not url or url.startswith("about:"):
             return False
-        if "/login" in url or "/i/flow/" in url:
+        if any(path in url for path in _NOT_SIGNED_IN_PATHS):
             return False
         self._session_confirmed = True
         return True

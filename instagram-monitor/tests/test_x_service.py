@@ -454,6 +454,29 @@ def test_login_leaves_two_factor_and_captcha_in_the_browser(tmp_path: Path):
     service.db.close()
 
 
+def test_account_lock_page_is_not_reported_as_a_finished_login(tmp_path: Path):
+    # Bei eingeschränkten Konten zeigt X /account/access – die Zugangsdaten
+    # sind zwar akzeptiert, die Anmeldung aber noch nicht fertig. Das darf
+    # nicht als „Sitzung bereit“ durchgehen.
+    page = _FakePage(
+        [
+            {"visible": ("text", "button", "body"), "url": "https://x.com/i/flow/login"},
+            {"visible": ("password", "button", "body"), "url": "https://x.com/i/flow/login"},
+            {
+                "visible": ("body",),
+                "url": "https://x.com/account/access",
+                "text": "Bestätige deine Identität, um fortzufahren.",
+            },
+        ]
+    )
+    service = _login_service(tmp_path, page)
+    result = service.login("name@example.com", TEST_PASSWORD)
+    assert result["state"] == "verification"
+    assert result["session_confirmed"] is False
+    assert service._already_signed_in(page) is False
+    service.db.close()
+
+
 def test_wrong_credentials_produce_an_error_without_the_password(tmp_path: Path):
     page = _FakePage(
         [
