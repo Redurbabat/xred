@@ -127,6 +127,45 @@ def _is_local_origin(value: str) -> bool:
     return (parsed.hostname or "").lower() in _LOCAL_HOSTNAMES
 
 
+def _authority(value: str, *, is_url: bool = False) -> str:
+    """Normalisiert „host:port“ zum Vergleich von Origin und Host.
+
+    Wird für den Herkunftsvergleich gebraucht: Verglichen wird NICHT gegen
+    localhost, sondern gegen den Host der Anfrage selbst. Auf dem PC ist das
+    127.0.0.1, im Handy-Modus die WLAN-Adresse, über Tailscale die
+    100.x-Adresse – die Prüfung stimmt damit in allen Betriebsarten.
+    """
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    if is_url:
+        try:
+            parsed = urlsplit(raw)
+        except ValueError:
+            return ""
+        if parsed.scheme not in ("http", "https"):
+            return ""
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if not host:
+            return ""
+        default = 443 if parsed.scheme == "https" else 80
+        try:
+            port = parsed.port or default
+        except ValueError:
+            return ""
+        return f"{host}:{port}"
+    host = _header_hostname(raw)
+    if not host:
+        return ""
+    tail = raw.rsplit("]", 1)[-1] if raw.startswith("[") else raw
+    port_part = tail.split(":", 1)[1].strip() if ":" in tail else ""
+    if port_part:
+        if not port_part.isdigit():
+            return ""
+        return f"{host}:{int(port_part)}"
+    return f"{host}:80"
+
+
 class _FeedJob:
     """Baut fortlaufend den Abo-Feed auf (Beiträge mehrerer Profile)."""
 
@@ -552,6 +591,45 @@ def create_app(
     # Policy) und deshalb auch keine Anmeldung in deinem Namen auslösen.
     _x_csrf_token = secrets.token_urlsafe(32)
 
+    def _same_origin_request():
+        """None, wenn die Anfrage von DIESER Oberfläche kommt, sonst 403.
+
+        Ohne diese Prüfung kann jede besuchte Webseite auf dem PC ein
+        X-Browserfenster öffnen, Suchen starten oder Videos herunterladen –
+        die Antwort bleibt für sie unlesbar, die Nebenwirkung tritt trotzdem
+        ein. Bewusst KEINE localhost-Prüfung wie beim Passwort: Suche und
+        Download sollen im Handy-Modus weiter über das WLAN funktionieren.
+        """
+        fetch_site = request.headers.get("Sec-Fetch-Site", "")
+        if fetch_site and fetch_site not in ("same-origin", "none"):
+            return jsonify(error="Anfrage von einer fremden Seite abgelehnt."), 403
+        source = request.headers.get("Origin", "") or request.headers.get("Referer", "")
+        if not source:
+            # Ein Browser kann einen Cross-Site-POST nicht ohne Origin
+            # erzeugen. Werkzeuge wie curl dürfen weiterhin lokal arbeiten.
+            return None
+        expected = _authority(request.headers.get("Host", ""))
+        if not expected or _authority(source, is_url=True) != expected:
+            return jsonify(error="Anfrage von einer fremden Seite abgelehnt."), 403
+        return None
+
+    def _json_object():
+        """(Daten, None) oder (None, 400). Nie eine Liste, nie ein 503.
+
+        ``get_json(force=True) or {}`` lieferte bei einem JSON-Array die Liste
+        selbst; das folgende ``data.get(...)`` warf dann einen AttributeError,
+        der als HTTP 503 mit internem Python-Text beim Nutzer landete.
+        """
+        try:
+            data = request.get_json(silent=True)
+        except Exception:
+            data = None
+        if data is None:
+            return {}, None
+        if not isinstance(data, dict):
+            return None, (jsonify(error="Ungültiges Anfrageformat."), 400)
+        return data, None
+
     def _local_only_credentials():
         """Gibt None zurück, wenn die Anfrage vom PC selbst stammt, sonst 403."""
         if not _is_local(request.remote_addr):
@@ -623,6 +701,9 @@ def create_app(
     def x_login_open():
         if x_service is None:
             return _x_unavailable()
+        denied = _same_origin_request()
+        if denied is not None:
+            return denied
         try:
             return jsonify(x_service.open_login())
         except Exception as exc:
@@ -668,7 +749,12 @@ def create_app(
     def x_search_start():
         if x_service is None:
             return _x_unavailable()
-        data = request.get_json(force=True, silent=True) or {}
+        denied = _same_origin_request()
+        if denied is not None:
+            return denied
+        data, bad = _json_object()
+        if bad is not None:
+            return bad
         try:
             started = x_service.start_search(
                 data.get("query"),
@@ -694,6 +780,9 @@ def create_app(
     def x_search_cancel():
         if x_service is None:
             return _x_unavailable()
+        denied = _same_origin_request()
+        if denied is not None:
+            return denied
         return jsonify(ok=x_service.cancel_search())
 
     def _start_x_download(data: dict, *, single: bool = False):
@@ -722,12 +811,22 @@ def create_app(
 
     @app.post("/api/x/download")
     def x_download_one():
-        data = request.get_json(force=True, silent=True) or {}
+        denied = _same_origin_request()
+        if denied is not None:
+            return denied
+        data, bad = _json_object()
+        if bad is not None:
+            return bad
         return _start_x_download(data, single=True)
 
     @app.post("/api/x/download-selected")
     def x_download_selected():
-        data = request.get_json(force=True, silent=True) or {}
+        denied = _same_origin_request()
+        if denied is not None:
+            return denied
+        data, bad = _json_object()
+        if bad is not None:
+            return bad
         return _start_x_download(data)
 
     @app.get("/api/x/download/status")
@@ -740,6 +839,9 @@ def create_app(
     def x_download_cancel():
         if x_service is None:
             return _x_unavailable()
+        denied = _same_origin_request()
+        if denied is not None:
+            return denied
         return jsonify(ok=x_service.cancel_download())
 
     @app.post("/api/login")

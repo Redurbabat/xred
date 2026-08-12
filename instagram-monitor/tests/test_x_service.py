@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import queue
 import threading
 import time
 from pathlib import Path
@@ -16,6 +17,7 @@ from app.x_service import (
     XService,
     XUnavailableError,
     XValidationError,
+    _Command,
     build_search_url,
     extract_post_id,
     is_browser_closed_error,
@@ -538,7 +540,8 @@ def test_browser_call_clears_credentials_from_the_command(tmp_path: Path):
     db = Database(tmp_path / "d.db")
     settings = Settings(db, default_download_dir=str(tmp_path / "downloads"))
     service = XService(db, settings, tmp_path / "session")
-    service._ensure_browser = lambda: None  # type: ignore[method-assign]
+    # _ensure_browser liefert die Auftragsschlange der aktuellen Sitzung.
+    service._ensure_browser = lambda: service._commands  # type: ignore[method-assign]
     seen: dict[str, object] = {}
 
     def worker() -> None:
@@ -619,6 +622,31 @@ def test_closed_browser_is_recognized_and_explained():
     assert "X-Browser öffnen" in message
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "net::ERR_CONNECTION_CLOSED at https://x.com/search",
+        "Connection closed while reading from the driver",
+    ],
+)
+def test_a_network_error_is_not_mistaken_for_a_closed_window(message):
+    # Früher enthielt _CLOSED_MARKERS ein nacktes „closed“. Damit galt jeder
+    # Verbindungsabbruch als zugeklicktes Fenster und riss die komplette
+    # Chromium-Sitzung ab.
+    assert not is_browser_closed_error(message)
+
+
+def test_closed_window_message_does_not_ask_for_a_playwright_install():
+    message = XService._map_browser_error(
+        RuntimeError("Target page, context or browser has been closed")
+    )
+    assert "install" not in message.lower()
+    assert "geschlossen" in message
+    # Ein wirklich fehlendes Chromium meldet weiterhin den Installationsweg.
+    missing = XService._map_browser_error(RuntimeError("Executable doesn't exist"))
+    assert "python -m playwright install chromium" in missing
+
+
 def test_closed_window_stops_the_browser_loop(tmp_path: Path):
     db = Database(tmp_path / "d.db")
     settings = Settings(db, default_download_dir=str(tmp_path / "downloads"))
@@ -643,3 +671,327 @@ def test_missing_ffmpeg_is_only_an_optional_warning(tmp_path: Path, monkeypatch)
     assert state["ffmpeg"] is False
     assert "ffmpeg" not in state["warning"].lower()
     db.close()
+
+
+# ----------------------------------------------------------------------
+# Lebenszyklus der Browsersitzung. _serve_commands ist bewusst von
+# sync_playwright getrennt, damit die Schleife ohne echten Browser
+# prüfbar ist – vorher war sie eingemauert und komplett ungetestet.
+# ----------------------------------------------------------------------
+
+
+class _FakeContext:
+    def __init__(self, pages: list) -> None:
+        self.pages = pages
+        self.closed = False
+        self.cookie_calls = 0
+
+    def is_closed(self) -> bool:
+        return self.closed
+
+    def cookies(self, _urls):
+        self.cookie_calls += 1
+        return []
+
+
+class _TickPage:
+    """Seite, deren Ereignis-Ping nach n Aufrufen einen Fehler wirft.
+
+    ``closes`` bildet den echten Ablauf nach: Wenn Playwright das geschlossene
+    Fenster meldet, ist auch der Kontext zu.
+    """
+
+    def __init__(self, fail_after: int = 0, error: str = "", closes=None) -> None:
+        self.fail_after = fail_after
+        self.error = error
+        self.closes = closes
+        self.ticks = 0
+
+    def wait_for_timeout(self, _ms: float) -> None:
+        self.ticks += 1
+        if self.error and self.ticks >= self.fail_after:
+            if self.closes is not None:
+                self.closes.closed = True
+            raise RuntimeError(self.error)
+
+
+def _loop_service(tmp_path: Path) -> XService:
+    db = Database(tmp_path / "d.db")
+    settings = Settings(db, default_download_dir=str(tmp_path / "downloads"))
+    return XService(db, settings, tmp_path / "session")
+
+
+@pytest.fixture()
+def fast_tick(monkeypatch):
+    """Takt der Browserschleife verkürzen – Tests warten sonst sekundenlang."""
+    monkeypatch.setattr("app.x_service._IDLE_TICK_SECONDS", 0.01)
+
+
+def test_serve_commands_notices_a_closed_window_while_idle(tmp_path: Path, fast_tick):
+    # Der eigentliche Fund: Im Leerlauf blockierte die Schleife in
+    # queue.get() und konnte das Schließen deshalb nie bemerken.
+    service = _loop_service(tmp_path)
+    context = _FakeContext([object()])
+    page = _TickPage(
+        fail_after=2,
+        error="Target page, context or browser has been closed",
+        closes=context,
+    )
+    commands: queue.Queue = queue.Queue()
+    service._serve_commands(context, page, commands)   # muss von allein enden
+    assert page.ticks == 2          # erster Tick still, zweiter meldet zu
+    assert context.closed is True
+    service.db.close()
+
+
+def test_a_network_error_does_not_end_the_session(tmp_path: Path, fast_tick):
+    # net::ERR_CONNECTION_CLOSED darf die Sitzung nicht abräumen.
+    service = _loop_service(tmp_path)
+    page = _TickPage(fail_after=1, error="net::ERR_CONNECTION_CLOSED")
+    context = _FakeContext([object()])
+    commands: queue.Queue = queue.Queue()
+
+    def stop() -> None:
+        while page.ticks < 3:
+            time.sleep(0.005)
+        commands.put(None)
+
+    threading.Thread(target=stop, daemon=True).start()
+    service._serve_commands(context, page, commands)
+    assert page.ticks >= 3          # trotz Fehler weitergetickt
+    assert context.closed is False
+    service.db.close()
+
+
+def test_a_closed_tab_is_replaced_without_ending_the_session(tmp_path: Path, fast_tick):
+    service = _loop_service(tmp_path)
+    dead = _TickPage(fail_after=1, error="Target page has been closed")
+    fresh = _TickPage()
+    context = _FakeContext([fresh])
+    commands: queue.Queue = queue.Queue()
+
+    def stop() -> None:
+        while fresh.ticks < 1:
+            time.sleep(0.005)
+        commands.put(None)
+
+    threading.Thread(target=stop, daemon=True).start()
+    service._serve_commands(context, dead, commands)
+    assert fresh.ticks >= 1          # auf der Ersatzseite weitergemacht
+    service.db.close()
+
+
+def test_an_abandoned_command_is_never_executed(tmp_path: Path):
+    # Nach einer Zeitüberschreitung darf ein Auftrag nicht später doch noch
+    # loslaufen – sonst navigierte ein verirrtes open_login das Fenster
+    # mitten in eine laufende Suche.
+    service = _loop_service(tmp_path)
+    page = _TickPage()
+    context = _FakeContext([page])
+    commands: queue.Queue = queue.Queue()
+    command = _Command(name="cookies")
+    command.abandon()
+    commands.put(command)
+    commands.put(None)
+    service._serve_commands(context, page, commands)
+    assert context.cookie_calls == 0
+    assert command.done.is_set() is False
+    service.db.close()
+
+
+def test_a_live_command_still_runs(tmp_path: Path):
+    service = _loop_service(tmp_path)
+    page = _TickPage()
+    context = _FakeContext([page])
+    commands: queue.Queue = queue.Queue()
+    command = _Command(name="cookies")
+    commands.put(command)
+    commands.put(None)
+    service._serve_commands(context, page, commands)
+    assert context.cookie_calls == 1
+    assert command.done.is_set() is True
+    service.db.close()
+
+
+def test_a_failed_thread_start_leaves_no_broken_state(tmp_path: Path, monkeypatch):
+    service = _loop_service(tmp_path)
+
+    def boom(self):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading.Thread, "start", boom)
+    with pytest.raises(XUnavailableError):
+        service._ensure_browser()
+    # Kein hängender Zustand: Der nächste Versuch darf nicht 45 s warten.
+    assert service._browser_thread is None
+    assert service._browser_ready.is_set()
+    service.db.close()
+
+
+def test_ensure_browser_starts_a_new_session_after_the_window_was_closed(tmp_path: Path):
+    # Nach dem Schließen lebt der alte Thread noch kurz. Wer nur is_alive()
+    # prüft, gibt die tote Sitzung zurück und der nächste Klick scheitert.
+    service = _loop_service(tmp_path)
+    started: list[str] = []
+
+    def fake_loop(commands):
+        # Bildet die echte Schleife nach: Sie endet, sobald die Sitzung tot
+        # ist – deshalb läuft das join() in _ensure_browser nicht ins Leere.
+        started.append("los")
+        service._browser_open = True
+        service._browser_ready.set()
+        while service._browser_open:
+            try:
+                if commands.get(timeout=0.01) is None:
+                    break
+            except queue.Empty:
+                continue
+
+    service._browser_loop = fake_loop  # type: ignore[method-assign]
+    first = service._ensure_browser()
+    assert started == ["los"]
+    service._browser_open = False          # Nutzer klickt das Fenster zu
+    second = service._ensure_browser()
+    assert started == ["los", "los"]
+    assert second is not first             # frische Schlange je Sitzung
+    service.db.close()
+
+
+class _SpyLock:
+    """Merkt sich, ob beim Freigeben der Job-Lock noch gehalten wurde."""
+
+    def __init__(self, inner: threading.Lock, job) -> None:
+        self._inner = inner
+        self._job = job
+        self.held_during_release: bool | None = None
+
+    def acquire(self, blocking: bool = True) -> bool:
+        return self._inner.acquire(blocking)
+
+    def release(self) -> None:
+        self.held_during_release = self._job._lock.locked()
+        self._inner.release()
+
+
+def test_the_operation_lock_is_free_as_soon_as_the_job_reports_finished(tmp_path: Path):
+    # Die Oberfläche stoppt ihr Polling, sobald running=false gemeldet wird,
+    # und darf dann sofort neu starten. Läge die Sperre da noch, antwortete der
+    # Server auf den eigenen Klick mit 409.
+    #
+    # Die Zeitlücke ist zu kurz, um sie durch Pollen zuverlässig zu treffen –
+    # geprüft wird deshalb die Zusicherung selbst: Freigabe und Veröffentlichung
+    # des Endzustands passieren unter EINEM gehaltenen Job-Lock. Wer also
+    # running=false sehen kann, findet die Sperre bereits frei.
+    db = Database(tmp_path / "d.db")
+    settings = Settings(db, default_download_dir=str(tmp_path / "downloads"))
+    service = XService(db, settings, tmp_path / "session", browser_search=lambda **_k: [])
+    spy = _SpyLock(service._operation_lock, service.search_job)
+    service._operation_lock = spy  # type: ignore[assignment]
+
+    assert service.start_search("#test", 5)
+    _wait(service.search_job)
+    assert spy.held_during_release is True
+
+    # Und die Sperre bleibt danach benutzbar – kein Leck.
+    for runde in range(20):
+        assert service.start_search("#test", 5), f"Runde {runde} bekam die Sperre nicht"
+        _wait(service.search_job)
+    db.close()
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("https://pbs.twimg.com/media/abc.jpg", "https://pbs.twimg.com/media/abc.jpg"),
+        ("https://video.twimg.com/tweet_video/x.mp4", "https://video.twimg.com/tweet_video/x.mp4"),
+        # Fremde Hosts und http bleiben draußen.
+        ("https://boese.example/x.jpg", ""),
+        ("http://pbs.twimg.com/x.jpg", ""),
+        # Ein Anführungszeichen hinter dem geprüften Host könnte im Frontend
+        # aus dem src-Attribut ausbrechen – zweite Schicht neben esc().
+        ('https://pbs.twimg.com/x" onerror="alert(1)', ""),
+        ("https://pbs.twimg.com/x'>", ""),
+        ("https://pbs.twimg.com/x\nfoo", ""),
+    ],
+)
+def test_preview_urls_cannot_break_out_of_an_attribute(raw, expected):
+    from app.x_service import _safe_preview_url
+
+    assert _safe_preview_url(raw) == expected
+
+
+def test_one_broken_search_card_does_not_lose_the_others(tmp_path: Path):
+    # Vorher warf eine einzige Karte ohne brauchbaren Link die komplette
+    # Suche weg – der Nutzer sah null Treffer statt der übrigen Videos.
+    db = Database(tmp_path / "d.db")
+    settings = Settings(db, default_download_dir=str(tmp_path / "downloads"))
+    base = {
+        "username": "alice",
+        "author_name": "Alice",
+        "search_query": "#test",
+        "caption": "Video",
+        "preview_url": "",
+        "published_at": "",
+    }
+
+    def search(**_kwargs):
+        return [
+            {**base, "post_url": "https://x.com/alice/status/1111111111"},
+            {**base, "post_url": None},                              # fehlt
+            {**base, "post_url": "https://boese.example/a/status/2"},  # fremd
+            {**base},                                                 # gar keiner
+            {**base, "post_url": "https://x.com/alice/status/2222222222"},
+        ]
+
+    service = XService(db, settings, tmp_path / "session", browser_search=search)
+    assert service.start_search("#test", 10)
+    state = _wait(service.search_job)
+    assert state["error"] == ""
+    assert state["found"] == 2
+    assert {item["post_id"] for item in state["items"]} == {"1111111111", "2222222222"}
+    db.close()
+
+
+def test_a_data_problem_is_not_reported_as_a_browser_error():
+    # XValidationError erbt jetzt auch von XServiceError – deshalb Klartext
+    # statt „X-Browserfehler: …“.
+    message = XService._map_browser_error(XValidationError("Der Link ist ungültig."))
+    assert message == "Der Link ist ungültig."
+    assert "Browserfehler" not in message
+
+
+@pytest.mark.parametrize(
+    ("url", "signed_in"),
+    [
+        ("https://x.com/home", True),
+        ("https://x.com/i/bookmarks", True),
+        ("https://x.com/", False),           # ausgeloggte Startseite
+        ("https://x.com", False),
+        ("chrome-error://chromewebdata/", False),
+        ("about:blank", False),
+        ("https://boese.example/home", False),
+        ("http://x.com/home", False),
+        ("https://x.com/i/flow/login", False),
+        ("https://x.com/account/access", False),
+    ],
+)
+def test_only_a_real_x_page_counts_as_a_confirmed_session(tmp_path: Path, url, signed_in):
+    service = _loop_service(tmp_path)
+
+    class _Page:
+        pass
+
+    page = _Page()
+    page.url = url
+    assert service._already_signed_in(page) is signed_in
+    assert service._session_confirmed is signed_in
+    service.db.close()
+
+
+def test_a_failed_cookie_export_is_visible_in_the_job_state(tmp_path: Path):
+    service = _loop_service(tmp_path)
+    service._browser_open = False
+    assert service._export_cookie_file() is None
+    message = service.download_job.snapshot()["message"]
+    assert "ohne Anmeldung" in message
+    service.db.close()

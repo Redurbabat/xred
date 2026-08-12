@@ -29,6 +29,13 @@ jobs:
         # customtkinter/plyer werden hier nicht gebraucht).
         run: pip install ruff pytest flask "instaloader<5" requests
 
+      - name: JavaScript-Syntax prüfen
+        # Kein Python-Test sieht app.js – die Datei wird nur als statische
+        # Datei ausgeliefert. Ein Syntaxfehler dort legt die komplette
+        # Oberfläche lahm und käme sonst grün durch die Prüfung.
+        # node liegt auf ubuntu-latest bereits vor, kein npm install nötig.
+        run: node --check app/static/app.js
+
       - name: Ruff (Linter)
         run: ruff check .
 

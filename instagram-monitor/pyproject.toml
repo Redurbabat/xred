@@ -39,6 +39,10 @@ ignore = [
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-q"
+# Ohne diese Zeile findet ein blankes `pytest` das Paket `app` nicht – es
+# funktioniert dann nur über `python -m pytest`, das den Arbeitsordner selbst
+# in sys.path einträgt. Editoren und IDEs rufen aber `pytest` direkt auf.
+pythonpath = ["."]
 
 [tool.pyright]
 include = ["app", "tests", "web.py", "main.py"]
