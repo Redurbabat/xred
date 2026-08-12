@@ -2080,6 +2080,8 @@ async function doLogout(){ if(confirm("Wirklich abmelden?")){ await api("/api/lo
 
 /* ---------- X-Videos (nur lokale Browser-Sitzung auf dem PC) ---------- */
 let xResults=[], xSelected=new Set(), xPollTimer=null, xLastNotice="", xAvailable=true;
+// Anmelde-Token gegen CSRF: liefert der lokale Server nur an diesen PC.
+let xCsrfToken="";
 
 function showXVideos(){
   cancelSelect(); pushView("x", showXVideos);
@@ -2097,8 +2099,23 @@ function showXVideos(){
         <span class="x-status" id="x_session_status">Status wird geladen …</span>
       </div>
       <div class="panel x-login-box">
-        <div><b>Manuelle Anmeldung</b><div class="hint">Die App fragt kein X-Passwort ab. Anmeldung, 2FA, CAPTCHA und Sicherheitsabfragen erledigst du ausschließlich im sichtbaren Browser.</div></div>
-        <button class="btn ghost" id="x_login_btn" onclick="xOpenLogin()">Bei X anmelden / Sitzung öffnen</button>
+        <div class="x-login-head">
+          <b>Bei X anmelden</b>
+          <div class="hint">Die Anmeldung läuft im sichtbaren Browser auf diesem PC. Dein Passwort wird nur ins X-Formular eingetragen – es wird nicht gespeichert und nicht protokolliert. 2FA, CAPTCHA und Sicherheitsabfragen beantwortest du dort selbst.</div>
+        </div>
+        <form class="x-login-form" id="x_login_form" autocomplete="off" onsubmit="event.preventDefault();xSubmitLogin()">
+          <label><span>E-Mail oder Benutzername</span>
+            <input id="x_identifier" type="text" maxlength="254" autocomplete="off" spellcheck="false" placeholder="name@example.com"></label>
+          <label><span>@Benutzername (optional)</span>
+            <input id="x_username" type="text" maxlength="16" autocomplete="off" spellcheck="false" placeholder="@meinname"></label>
+          <label><span>Passwort</span>
+            <input id="x_password" type="password" maxlength="256" autocomplete="new-password" data-1p-ignore data-lpignore="true"></label>
+          <div class="x-login-actions">
+            <button class="btn" type="submit" id="x_login_submit">Bei X anmelden</button>
+            <button class="btn ghost" type="button" id="x_login_btn" onclick="xOpenLogin()">X-Browser öffnen</button>
+          </div>
+        </form>
+        <div class="hint x-login-note" id="x_login_note" style="display:none"></div>
       </div>
       <div class="panel x-search-box">
         <label class="x-query"><span>Hashtag oder Suchbegriff</span><input id="x_query" maxlength="120" placeholder="#fussball oder eine Phrase" onkeydown="if(event.key==='Enter')xStartSearch()"></label>
@@ -2123,7 +2140,25 @@ function showXVideos(){
       <details class="panel x-recent"><summary>Letzte X-Downloads</summary><div id="x_recent" class="hint">Noch keine X-Downloads gespeichert.</div></details>
       <div class="hint x-legal">Lade nur öffentlich zugängliche Inhalte herunter, für die du die erforderlichen Rechte besitzt, und beachte die X-Nutzungsbedingungen. Die App umgeht keine Zugriffs- oder Schutzmechanismen.</div>
     </section>`;
+  xLoadCsrf();
   xLoadStatus();
+}
+
+/* Holt das Anmelde-Token. Vom Handy/Tablet antwortet der Server mit 403 –
+   dann bleibt das Passwortfeld ausgeblendet. */
+async function xLoadCsrf(){
+  const {status,data}=await api("/api/x/csrf");
+  xCsrfToken=(status===200 && data && data.token) ? data.token : "";
+  xSetLoginMode(!!xCsrfToken);
+  return xCsrfToken;
+}
+
+function xSetLoginMode(isLocal){
+  const form=$("x_login_form"), note=$("x_login_note");
+  if(!form||!note) return;
+  form.style.display=isLocal?"":"none";
+  note.style.display=isLocal?"none":"block";
+  if(!isLocal) note.textContent="Die X-Anmeldung mit Passwort ist nur direkt am PC möglich. Über das Netzwerk (Handy/Tablet) lehnt der Server sie ab.";
 }
 
 async function xLoadStatus(){
@@ -2131,12 +2166,15 @@ async function xLoadStatus(){
   if(viewMode!=="x") return;
   if(status===0 || !data){ xSetWarning("Lokaler X-Status nicht erreichbar."); return; }
   xAvailable=!!data.available;
-  const label=$("x_session_status"), login=$("x_login_btn");
+  const label=$("x_session_status"), login=$("x_login_btn"), submit=$("x_login_submit");
+  if(data.local===false) xSetLoginMode(false);
   if(!data.available){
     label.textContent="Nicht verfügbar"; label.classList.add("bad");
     login.disabled=true; $("x_search_btn").disabled=true;
+    if(submit) submit.disabled=true;
     xSetWarning(data.warning||data.error||"X-Suche ist auf diesem Gerät nicht verfügbar.");
   }else{
+    if(submit) submit.disabled=false;
     label.classList.toggle("ok",!!data.session_confirmed);
     label.textContent=data.session_confirmed ? "Sitzung bereit" : (data.browser_open ? "Browser geöffnet" : "Sitzung nicht geöffnet");
     xSetWarning(data.warning||(!data.ffmpeg ? "FFmpeg wurde nicht gefunden. Die App nutzt nach Möglichkeit eine einzelne MP4-Variante; getrennte beste Video-/Audiospuren können FFmpeg benötigen." : ""));
@@ -2157,10 +2195,41 @@ function xSetWarning(message){
 async function xOpenLogin(){
   const btn=$("x_login_btn"); btn.disabled=true; btn.textContent="Browser wird geöffnet …";
   const {data}=await api("/api/x/login/open",{method:"POST"});
-  btn.disabled=false; btn.textContent="Bei X anmelden / Sitzung öffnen";
+  btn.disabled=false; btn.textContent="X-Browser öffnen";
   if(data.error){ toast(data.error,"err"); xSetWarning(data.error); return; }
-  toast("X-Browser geöffnet. Bitte dort manuell anmelden.","ok");
-  const label=$("x_session_status"); if(label) label.textContent="Browser geöffnet – Anmeldung dort abschließen";
+  toast("X-Browser geöffnet. Du kannst dich dort auch direkt anmelden.","ok");
+  const label=$("x_session_status"); if(label) label.textContent="Browser geöffnet";
+}
+
+/* Direkte Anmeldung: Die Zugangsdaten gehen nur an den lokalen Server, der
+   sie ins sichtbare X-Fenster eintippt. Das Passwortfeld wird sofort danach
+   geleert – gespeichert wird es nirgends. */
+async function xSubmitLogin(){
+  const idField=$("x_identifier"), userField=$("x_username"), pwField=$("x_password");
+  if(!idField||!pwField) return;
+  const identifier=(idField.value||"").trim();
+  const username=(userField&&userField.value||"").trim();
+  const password=pwField.value||"";
+  if(!identifier){ toast("Bitte E-Mail-Adresse oder Benutzernamen eingeben.","err"); idField.focus(); return; }
+  if(!password){ toast("Bitte das X-Passwort eingeben.","err"); pwField.focus(); return; }
+  const btn=$("x_login_submit"); btn.disabled=true; btn.textContent="Anmeldung läuft …";
+  let result={status:0,data:{}};
+  try{
+    if(!xCsrfToken) await xLoadCsrf();
+    if(!xCsrfToken){ toast("Anmeldung nur direkt am PC möglich.","err"); return; }
+    result=await api("/api/x/login",{method:"POST",
+      headers:{"Content-Type":"application/json","X-CSRF-Token":xCsrfToken},
+      body:JSON.stringify({identifier:identifier,username:username,password:password})});
+  } finally {
+    pwField.value="";                       // Passwort nicht im Formular liegen lassen
+    btn.disabled=false; btn.textContent="Bei X anmelden";
+  }
+  const data=result.data||{};
+  if(result.status===403){ xCsrfToken=""; xSetLoginMode(false); }
+  if(data.error){ toast(data.error,"err"); xSetWarning(data.error); return; }
+  xSetWarning("");
+  toast(data.message||"Anmeldung im X-Fenster fortsetzen.", data.state==="signed_in"?"ok":"");
+  xLoadStatus();
 }
 
 async function xStartSearch(){

@@ -32,13 +32,14 @@ import logging
 import os
 import random
 import re
+import secrets
 import shutil
 import threading
 import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import requests as _requests
 from flask import (
@@ -90,6 +91,40 @@ _BULK_DELAY = 4.0
 # Pause zwischen zwei Profilen beim Feed-Aufbau (Sekunden). Kürzer als beim
 # Download, damit der Feed zügig erscheint, aber immer noch rücksichtsvoll.
 _FEED_DELAY = 1.5
+
+# Namen, unter denen der eigene PC sich selbst erreicht. Nur diese dürfen den
+# X-Passwort-Endpunkt ansprechen – jeder andere Host-Header wäre entweder ein
+# Gerät im WLAN oder ein DNS-Rebinding-Versuch von einer fremden Seite aus.
+_LOCAL_HOSTNAMES = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
+
+
+def _header_hostname(value: str) -> str:
+    """Extrahiert den reinen Hostnamen aus „host:port“ bzw. „[::1]:port“."""
+    host = (value or "").strip().rstrip(".")
+    if not host:
+        return ""
+    if host.startswith("["):
+        end = host.find("]")
+        return host[1:end].lower() if end > 0 else ""
+    return host.split(":", 1)[0].lower()
+
+
+def _is_local_host_header(value: str) -> bool:
+    """Schutz vor DNS-Rebinding: nur localhost-Namen sind zulässig."""
+    return _header_hostname(value) in _LOCAL_HOSTNAMES
+
+
+def _is_local_origin(value: str) -> bool:
+    """Prüft Origin/Referer einer Anfrage (CSRF-Schutz)."""
+    if not value or value == "null":
+        return False
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    return (parsed.hostname or "").lower() in _LOCAL_HOSTNAMES
 
 
 class _FeedJob:
@@ -507,6 +542,59 @@ def create_app(
         message = x_service.public_error(exc) if x_service is not None else _x_android_message
         return jsonify(error=message), status_code
 
+    # ------------------------------------------------------------------
+    # Schutz des X-Passwort-Endpunkts
+    # ------------------------------------------------------------------
+    # Das X-Passwort darf ausschließlich vom PC selbst kommen, auf dem der
+    # sichtbare Browser läuft. Ein Handy/Tablet im WLAN – auch mit gültigem
+    # Zugangscode – bekommt hier immer 403. Zusätzlich schützt ein Token
+    # gegen CSRF: Eine fremde Webseite kann es nicht auslesen (Same-Origin-
+    # Policy) und deshalb auch keine Anmeldung in deinem Namen auslösen.
+    _x_csrf_token = secrets.token_urlsafe(32)
+
+    def _local_only_credentials():
+        """Gibt None zurück, wenn die Anfrage vom PC selbst stammt, sonst 403."""
+        if not _is_local(request.remote_addr):
+            return jsonify(
+                error="Das X-Passwort kann nur direkt am PC eingegeben werden, nicht über "
+                      "das Netzwerk (Handy/Tablet). Bitte die Oberfläche auf dem PC öffnen.",
+                local_only=True,
+            ), 403
+        if not _is_local_host_header(request.headers.get("Host", "")):
+            return jsonify(
+                error="Ungültige Adresse für die X-Anmeldung. Bitte http://127.0.0.1 "
+                      "verwenden.",
+                local_only=True,
+            ), 403
+        origin = request.headers.get("Origin", "")
+        referer = request.headers.get("Referer", "")
+        if origin:
+            if not _is_local_origin(origin):
+                return jsonify(error="Anfrage von einer fremden Seite abgelehnt."), 403
+        elif referer and not _is_local_origin(referer):
+            return jsonify(error="Anfrage von einer fremden Seite abgelehnt."), 403
+        if not request.is_json:
+            return jsonify(error="Ungültiges Anfrageformat."), 403
+        sent = request.headers.get("X-CSRF-Token", "")
+        # isascii(): Werkzeug liest Kopfzeilen als Latin-1, ein Byte ab 0x80
+        # wird also zu einem Nicht-ASCII-Zeichen. compare_digest würde damit
+        # mit TypeError abbrechen (HTTP 500) – das echte Token ist reines
+        # ASCII, ein solcher Wert ist deshalb schlicht falsch.
+        if not sent or not sent.isascii() or not secrets.compare_digest(sent, _x_csrf_token):
+            return jsonify(
+                error="Sicherheitsprüfung fehlgeschlagen. Bitte die Seite neu laden (F5).",
+            ), 403
+        return None
+
+    @app.get("/api/x/csrf")
+    def x_csrf():
+        """Liefert das Anmelde-Token – ausschließlich an den PC selbst."""
+        if not _is_local(request.remote_addr) or not _is_local_host_header(
+            request.headers.get("Host", "")
+        ):
+            return jsonify(error="Nur lokal verfügbar.", local_only=True), 403
+        return jsonify(token=_x_csrf_token)
+
     @app.get("/api/x/status")
     def x_status():
         if x_service is None:
@@ -520,12 +608,16 @@ def create_app(
                 available=False,
                 browser_open=False,
                 session_confirmed=False,
+                local=False,
                 warning=_x_android_message,
                 search=idle,
                 download=idle,
                 recent_downloads=[],
             )
-        return jsonify(x_service.status())
+        # „local“ steuert nur die Anzeige: Auf Handy/Tablet blendet die
+        # Oberfläche das Passwortfeld aus – abgelehnt wird ein Versuch
+        # ohnehin serverseitig mit 403.
+        return jsonify({**x_service.status(), "local": _is_local(request.remote_addr)})
 
     @app.post("/api/x/login/open")
     def x_login_open():
@@ -535,6 +627,42 @@ def create_app(
             return jsonify(x_service.open_login())
         except Exception as exc:
             return _x_error(exc, 503)
+
+    @app.post("/api/x/login")
+    def x_login():
+        """Direkte X-Anmeldung im sichtbaren Browser (nur vom PC selbst).
+
+        Das Passwort wird ausschließlich an das X-Formular weitergereicht:
+        Es wird nicht gespeichert, nicht protokolliert und nicht
+        zurückgegeben. 2FA, CAPTCHA und Sicherheitsabfragen bleiben im
+        sichtbaren Fenster.
+        """
+        if x_service is None:
+            return _x_unavailable()
+        denied = _local_only_credentials()
+        if denied is not None:
+            return denied
+        from .x_service import XLoginError, XValidationError
+
+        data = request.get_json(silent=True, cache=False)
+        if not isinstance(data, dict):
+            return jsonify(error="Ungültige Anmeldedaten."), 400
+        try:
+            result = x_service.login(
+                data.get("identifier"),
+                data.get("password"),
+                data.get("username", ""),
+            )
+        except (XValidationError, TypeError, ValueError) as exc:
+            return _x_error(exc, 400)
+        except XLoginError as exc:
+            return _x_error(exc, 401)
+        except Exception as exc:
+            return _x_error(exc, 503)
+        finally:
+            # Das Passwort soll nicht länger als nötig im Speicher stehen.
+            data.clear()
+        return jsonify(result)
 
     @app.post("/api/x/search")
     def x_search_start():
