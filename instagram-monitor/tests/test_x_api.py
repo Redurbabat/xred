@@ -72,6 +72,25 @@ def test_x_status_and_search_success(api_env):
     assert state["items"][0]["post_url"] == "https://x.com/alice/status/1234567890"
 
 
+def test_bookmarks_and_likes_start_without_a_query(api_env):
+    """Die eigenen Listen brauchen keinen Suchbegriff."""
+    client, _db, service = api_env
+    for source in ("bookmarks", "likes"):
+        response = client.post("/api/x/search", json={"source": source, "limit": 5})
+        assert response.status_code == 202, source
+        end = time.monotonic() + 2
+        while time.monotonic() < end and service.search_job.snapshot()["running"]:
+            time.sleep(0.01)
+        assert service.search_job.snapshot()["finished"] is True
+
+
+def test_an_unknown_source_is_rejected(api_env):
+    client, _db, _service = api_env
+    response = client.post("/api/x/search", json={"source": "feed", "limit": 5})
+    assert response.status_code == 400
+    assert response.get_json()["error"]
+
+
 @pytest.mark.parametrize(
     "payload",
     [

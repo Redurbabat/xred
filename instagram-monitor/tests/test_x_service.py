@@ -15,6 +15,7 @@ from app.settings import Settings
 from app.x_service import (
     XLoginError,
     XService,
+    XServiceError,
     XUnavailableError,
     XValidationError,
     _Command,
@@ -29,9 +30,11 @@ from app.x_service import (
     redact_secret,
     safe_media_filename,
     safe_path_component,
+    source_label,
     validate_password,
     validate_result_limit,
     validate_sort,
+    validate_source,
     write_no_password_manager_prefs,
 )
 
@@ -994,4 +997,246 @@ def test_a_failed_cookie_export_is_visible_in_the_job_state(tmp_path: Path):
     assert service._export_cookie_file() is None
     message = service.download_job.snapshot()["message"]
     assert "ohne Anmeldung" in message
+    service.db.close()
+
+
+# --- Eigene Listen: Lesezeichen und Likes ("Verlauf" in der X-App) ---------
+
+
+class _ListLocator:
+    """Minimaler Locator für die Listenseiten (Lesezeichen/Likes)."""
+
+    def __init__(self, page: "_ListPage", selector: str) -> None:
+        self.page = page
+        self.selector = selector
+
+    @property
+    def first(self) -> "_ListLocator":
+        return self
+
+    def count(self) -> int:
+        return 1 if self.selector in self.page.elements else 0
+
+    def wait_for(self, state: str = "visible", timeout: float = 0) -> None:
+        if self.selector not in self.page.elements:
+            raise _FakeTimeout(f"Timeout waiting for {self.selector}")
+
+    def get_attribute(self, name: str) -> str:
+        return self.page.elements.get(self.selector, {}).get(name, "")
+
+    def inner_text(self, timeout: float = 0) -> str:
+        return self.page.elements.get(self.selector, {}).get("text", "")
+
+
+class _ListPage:
+    def __init__(self, elements: dict, url: str = "https://x.com/home") -> None:
+        self.elements = elements
+        self.url = url
+        self.goto_calls: list[str] = []
+
+    def goto(self, url: str, wait_until: str = "load", timeout: float = 0) -> None:
+        self.goto_calls.append(url)
+        self.url = url
+
+    def locator(self, selector: str) -> _ListLocator:
+        return _ListLocator(self, selector)
+
+    def evaluate(self, script: str) -> None:
+        return None
+
+
+def _list_service(tmp_path: Path) -> XService:
+    db = Database(tmp_path / "d.db")
+    settings = Settings(db, default_download_dir=str(tmp_path / "downloads"))
+    return XService(db, settings, tmp_path / "session")
+
+
+def test_source_validation_accepts_only_the_three_known_lists():
+    assert validate_source(None) == "search"
+    assert validate_source("BOOKMARKS") == "bookmarks"
+    assert validate_source(" likes ") == "likes"
+    assert source_label("likes") == "Likes"
+    assert source_label("bookmarks") == "Lesezeichen"
+    assert source_label("search") == ""
+    assert validate_source("") == "search"  # leeres Feld = ganz normale Suche
+    for bad in ("feed", "../etc", 7):
+        with pytest.raises(XValidationError):
+            validate_source(bad)
+
+
+def test_bookmarks_use_the_fixed_address(tmp_path: Path):
+    service = _list_service(tmp_path)
+    page = _ListPage({})
+    assert service._collection_url(page, "bookmarks") == "https://x.com/i/bookmarks"
+    assert page.goto_calls == []  # Lesezeichen brauchen keinen Umweg
+    service.db.close()
+
+
+def test_likes_address_is_built_from_the_own_username(tmp_path: Path):
+    service = _list_service(tmp_path)
+    page = _ListPage({'a[data-testid="AppTabBar_Profile_Link"]': {"href": "/meinname"}})
+    assert service._collection_url(page, "likes") == "https://x.com/meinname/likes"
+    service.db.close()
+
+
+def test_likes_fall_back_to_the_account_switcher(tmp_path: Path):
+    service = _list_service(tmp_path)
+    page = _ListPage(
+        {'[data-testid="SideNav_AccountSwitcher_Button"]': {"text": "Mein Name\n@zweitname"}}
+    )
+    assert service._collection_url(page, "likes") == "https://x.com/zweitname/likes"
+    service.db.close()
+
+
+def test_likes_without_a_readable_username_explain_themselves(tmp_path: Path):
+    service = _list_service(tmp_path)
+    with pytest.raises(XServiceError) as excinfo:
+        service._collection_url(_ListPage({}), "likes")
+    assert "Benutzername" in str(excinfo.value)
+    service.db.close()
+
+
+def test_an_empty_bookmark_list_is_no_error_but_an_empty_result(tmp_path: Path):
+    service = _list_service(tmp_path)
+    page = _ListPage({}, url="https://x.com/i/bookmarks")
+    results = service._search_visible_page(
+        page, "Lesezeichen", 10, "latest", False, threading.Event(), "bookmarks"
+    )
+    assert results == []
+    service.db.close()
+
+
+def test_an_empty_search_page_stays_an_error(tmp_path: Path):
+    service = _list_service(tmp_path)
+    page = _ListPage({}, url="https://x.com/search?q=test")
+    with pytest.raises(XServiceError):
+        service._search_visible_page(
+            page, "test", 10, "latest", False, threading.Event(), "search"
+        )
+    service.db.close()
+
+
+def test_bookmark_job_needs_no_query_and_labels_its_own_folder(tmp_path: Path):
+    db = Database(tmp_path / "d.db")
+    settings = Settings(db, default_download_dir=str(tmp_path / "downloads"))
+    seen: dict = {}
+
+    def search(**kwargs):
+        seen.update(kwargs)
+        return [
+            {
+                "post_id": "1234567890",
+                "username": "alice",
+                "author_name": "Alice",
+                "post_url": "https://x.com/alice/status/1234567890",
+                "search_query": kwargs["query"],
+                "caption": "Video",
+                "preview_url": "",
+                "published_at": "",
+            }
+        ]
+
+    service = XService(db, settings, tmp_path / "session", browser_search=search)
+    assert service.start_search("", 10, source="bookmarks")
+    state = _wait(service.search_job)
+    assert seen["source"] == "bookmarks"
+    assert seen["query"] == "Lesezeichen"
+    assert state["found"] == 1
+    # Zielordner: <Download-Ordner>/X/Lesezeichen/Videos
+    assert safe_path_component(state["items"][0]["search_query"]) == "Lesezeichen"
+    db.close()
+
+
+def test_likes_job_rejects_nothing_for_a_missing_query(tmp_path: Path):
+    db = Database(tmp_path / "d.db")
+    settings = Settings(db, default_download_dir=str(tmp_path / "downloads"))
+    service = XService(db, settings, tmp_path / "session", browser_search=lambda **_k: [])
+    assert service.start_search(None, 5, source="likes")
+    assert _wait(service.search_job)["finished"] is True
+    db.close()
+
+
+def test_the_search_still_insists_on_a_query(tmp_path: Path):
+    db = Database(tmp_path / "d.db")
+    settings = Settings(db, default_download_dir=str(tmp_path / "downloads"))
+    service = XService(db, settings, tmp_path / "session", browser_search=lambda **_k: [])
+    with pytest.raises(XValidationError):
+        service.start_search("", 5, source="search")
+    db.close()
+
+
+class _NoWait:
+    """cancel_event-Ersatz, der Wartezeiten im Test überspringt."""
+
+    def is_set(self) -> bool:
+        return False
+
+    def wait(self, timeout: float = 0) -> bool:
+        return False
+
+
+class _ArticleWithoutVideo:
+    def locator(self, selector: str):
+        return _ListLocator(_ListPage({}), selector)
+
+    def inner_text(self, timeout: float = 0) -> str:
+        return "Nur Text"
+
+
+class _Articles:
+    def __init__(self) -> None:
+        self.article = _ArticleWithoutVideo()
+
+    @property
+    def first(self):
+        return self
+
+    def wait_for(self, state: str = "visible", timeout: float = 0) -> None:
+        return None
+
+    def count(self) -> int:
+        return 1
+
+    def nth(self, index: int):
+        return self.article
+
+
+class _ScrollPage:
+    """Liste ohne ein einziges Video, die sich N-mal weiterschieben lässt."""
+
+    def __init__(self, scrollable_rounds: int) -> None:
+        self.url = "https://x.com/i/bookmarks"
+        self.y = 0.0
+        self.scrolls = 0
+        self.scrollable_rounds = scrollable_rounds
+
+    def goto(self, url: str, wait_until: str = "load", timeout: float = 0) -> None:
+        self.url = url
+
+    def locator(self, selector: str):
+        if selector == "article":
+            return _Articles()
+        return _ListLocator(_ListPage({}), selector)
+
+    def evaluate(self, script: str):
+        if "scrollY" in script:
+            return self.y
+        self.scrolls += 1
+        if self.scrolls <= self.scrollable_rounds:
+            self.y += 700
+        return None
+
+
+def test_a_list_without_videos_keeps_scrolling_until_the_page_stands_still(tmp_path: Path):
+    """Beiträge ohne Video dürfen die Liste nicht vorzeitig beenden."""
+    service = _list_service(tmp_path)
+    page = _ScrollPage(scrollable_rounds=8)
+    results = service._search_visible_page(
+        page, "Lesezeichen", 10, "latest", False, _NoWait(), "bookmarks"
+    )
+    assert results == []
+    # Weitergescrollt, obwohl kein einziger Treffer dazukam …
+    assert page.scrolls > 3
+    # … aber am Seitenende beendet und nicht bis ans Rundenlimit gelaufen.
+    assert page.scrolls < 20
     service.db.close()

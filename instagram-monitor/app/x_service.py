@@ -50,6 +50,18 @@ _VIDEO_SUFFIXES = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}
 _PREVIEW_HOSTS = {"pbs.twimg.com", "video.twimg.com", "abs.twimg.com"}
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
 _LOGIN_URL = "https://x.com/i/flow/login"
+_HOME_URL = "https://x.com/home"
+_BOOKMARKS_URL = "https://x.com/i/bookmarks"
+
+# Quellen der Beitragsliste. „search“ ist die Stichwortsuche, die beiden
+# anderen sind die eigenen Listen aus dem X-Bereich „Verlauf“ (Reiter
+# „Lesezeichen“ und das Herz). Alle drei liefern dieselben Beitragskarten,
+# deshalb unterscheidet sich nur die aufgerufene Adresse.
+SOURCE_SEARCH = "search"
+SOURCE_LIKES = "likes"
+SOURCE_BOOKMARKS = "bookmarks"
+# Zugleich der Ordnername unterhalb von <Download-Ordner>/X/.
+_SOURCE_LABELS = {SOURCE_LIKES: "Likes", SOURCE_BOOKMARKS: "Lesezeichen"}
 
 # Chromium ohne Passwortmanager, ohne Speichern-Dialog und ohne Autofill-
 # Server: Das X-Passwort soll ausschließlich im Formular landen und nirgends
@@ -297,6 +309,19 @@ def validate_sort(value: Any) -> str:
     if sort not in {"latest", "top"}:
         raise XValidationError("Sortierung muss „Neueste“ oder „Top“ sein.")
     return sort
+
+
+def validate_source(value: Any) -> str:
+    """Prüft die Herkunft der Liste: Suche, Likes oder Lesezeichen."""
+    source = str(value or SOURCE_SEARCH).strip().lower()
+    if source not in {SOURCE_SEARCH, SOURCE_LIKES, SOURCE_BOOKMARKS}:
+        raise XValidationError("Unbekannte Quelle. Erlaubt: Suche, Likes oder Lesezeichen.")
+    return source
+
+
+def source_label(source: str) -> str:
+    """Anzeigename und Ordnername einer Quelle."""
+    return _SOURCE_LABELS.get(validate_source(source), "")
 
 
 def normalize_post_url(value: Any) -> str:
@@ -639,13 +664,23 @@ class XService:
         limit: Any = 10,
         sort: Any = "latest",
         exclude_reposts: Any = False,
+        source: Any = SOURCE_SEARCH,
     ) -> bool:
-        normalized_query = normalize_search_query(query)
+        normalized_source = validate_source(source)
+        if normalized_source == SOURCE_SEARCH:
+            normalized_query = normalize_search_query(query)
+            start_message = "X-Suche wird vorbereitet …"
+        else:
+            # Likes und Lesezeichen brauchen keinen Suchbegriff. Das Etikett
+            # wandert als „search_query“ mit und bestimmt damit zugleich den
+            # Zielordner (…/X/Likes/Videos bzw. …/X/Lesezeichen/Videos).
+            normalized_query = _SOURCE_LABELS[normalized_source]
+            start_message = f"{normalized_query} werden geladen …"
         normalized_limit = validate_result_limit(limit)
         normalized_sort = validate_sort(sort)
         if not self._operation_lock.acquire(blocking=False):
             return False
-        if not self.search_job.try_start(total=normalized_limit, message="X-Suche wird vorbereitet …"):
+        if not self.search_job.try_start(total=normalized_limit, message=start_message):
             self._operation_lock.release()
             return False
 
@@ -659,6 +694,7 @@ class XService:
                     normalized_sort,
                     bool(exclude_reposts),
                     self.search_job.cancel_event,
+                    normalized_source,
                 )
                 unique: dict[str, dict[str, Any]] = {}
                 unreadable = 0
@@ -831,6 +867,7 @@ class XService:
         sort: str,
         exclude_reposts: bool,
         cancel_event: threading.Event,
+        source: str = SOURCE_SEARCH,
     ) -> list[dict[str, Any]]:
         if self._browser_search_override is not None:
             return self._browser_search_override(
@@ -839,6 +876,7 @@ class XService:
                 sort=sort,
                 exclude_reposts=exclude_reposts,
                 cancel_event=cancel_event,
+                source=source,
             )
         return self._browser_call(
             "search",
@@ -848,6 +886,7 @@ class XService:
                 "sort": sort,
                 "exclude_reposts": exclude_reposts,
                 "cancel_event": cancel_event,
+                "source": source,
             },
             timeout=MAX_SEARCH_SECONDS + 45,
         )
@@ -1215,12 +1254,13 @@ class XService:
         sort: str,
         exclude_reposts: bool,
         cancel_event: threading.Event,
+        source: str = SOURCE_SEARCH,
     ) -> list[dict[str, Any]]:
-        page.goto(
-            build_search_url(query, sort, exclude_reposts),
-            wait_until="commit",
-            timeout=60_000,
-        )
+        if source == SOURCE_SEARCH:
+            target = build_search_url(query, sort, exclude_reposts)
+        else:
+            target = self._collection_url(page, source)
+        page.goto(target, wait_until="commit", timeout=60_000)
         if "/login" in page.url or "/i/flow/login" in page.url:
             self._session_confirmed = False
             raise XServiceError(
@@ -1237,6 +1277,14 @@ class XService:
                 raise XServiceError(
                     "Die X-Sitzung ist abgelaufen. Bitte oben erneut bei X anmelden."
                 ) from exc
+            if source != SOURCE_SEARCH:
+                # Eine leere Liste ist bei Likes und Lesezeichen ein normales
+                # Ergebnis und kein Fehler: Dann steht dort schlicht nichts
+                # (oder nichts mit Video). Die Suche dagegen sollte immer
+                # Karten liefern – dort bleibt es eine Fehlermeldung.
+                self._session_confirmed = True
+                logger.info("%s: keine Beitragskarten sichtbar.", source_label(source))
+                return []
             raise XServiceError(
                 "X zeigt keine Beitragskarten. Möglicherweise wurde das Layout geändert oder eine Sicherheitsabfrage wartet im Browser."
             ) from exc
@@ -1245,6 +1293,7 @@ class XService:
         results: dict[str, dict[str, Any]] = {}
         started = time.monotonic()
         stagnant_rounds = 0
+        scrolled = -1.0
         for round_number in range(MAX_SCROLL_ROUNDS + 1):
             if cancel_event.is_set() or time.monotonic() - started >= MAX_SEARCH_SECONDS:
                 break
@@ -1262,13 +1311,71 @@ class XService:
             )
             if len(results) >= limit:
                 break
-            stagnant_rounds = stagnant_rounds + 1 if len(results) == before else 0
+            # „Keine neuen Treffer“ allein heißt nicht, dass die Seite zu Ende
+            # ist: In Lesezeichen und Likes stehen auch Beiträge ohne Video,
+            # und davon können etliche Bildschirmhöhen hintereinander liegen.
+            # Erst wenn die Seite sich auch nicht mehr weiterschieben lässt,
+            # ist wirklich Schluss.
+            moved = self._scroll_position(page) > scrolled
+            stagnant_rounds = 0 if len(results) != before or moved else stagnant_rounds + 1
             if stagnant_rounds >= 3 or round_number >= MAX_SCROLL_ROUNDS:
                 break
+            scrolled = self._scroll_position(page)
             page.evaluate("window.scrollBy(0, Math.max(window.innerHeight * 0.85, 700))")
             if cancel_event.wait(1.5):
                 break
         return list(results.values())[:limit]
+
+    @staticmethod
+    def _scroll_position(page: Any) -> float:
+        """Aktuelle Scrollhöhe – 0.0, wenn die Seite sie nicht verrät."""
+        try:
+            return float(page.evaluate("window.scrollY") or 0)
+        except Exception:
+            return 0.0
+
+    def _collection_url(self, page: Any, source: str) -> str:
+        """Adresse der eigenen Liste (Lesezeichen oder Likes).
+
+        Lesezeichen haben eine feste Adresse. Die Likes-Seite hängt dagegen
+        am eigenen Benutzernamen, den X nirgends über eine feste Adresse
+        anbietet – er wird deshalb aus der Navigationsleiste der
+        angemeldeten Sitzung gelesen.
+        """
+        if source == SOURCE_BOOKMARKS:
+            return _BOOKMARKS_URL
+        username = self._own_username(page)
+        if not username:
+            raise XServiceError(
+                "Der eigene X-Benutzername konnte nicht gelesen werden. Bitte prüfen, "
+                "ob die Sitzung im X-Fenster noch angemeldet ist."
+            )
+        return f"https://x.com/{username}/likes"
+
+    def _own_username(self, page: Any) -> str:
+        """Liest den eigenen @Namen aus der angemeldeten Oberfläche."""
+        if not page.url.startswith(("https://x.com/", "https://twitter.com/")):
+            page.goto(_HOME_URL, wait_until="commit", timeout=60_000)
+        try:
+            link = page.locator('a[data-testid="AppTabBar_Profile_Link"]').first
+            link.wait_for(state="attached", timeout=15_000)
+            candidate = (link.get_attribute("href") or "").strip("/").split("/")[0]
+            if _USERNAME_RE.fullmatch(candidate):
+                return candidate
+        except Exception:
+            logger.debug("Profil-Link in der X-Navigation nicht lesbar.", exc_info=True)
+        # Schmales Fenster: Die Navigationsleiste fehlt, der Kontoschalter
+        # unten links trägt den @Namen aber weiterhin als Text.
+        try:
+            switcher = page.locator('[data-testid="SideNav_AccountSwitcher_Button"]').first
+            if switcher.count():
+                for line in switcher.inner_text().splitlines():
+                    handle = line.strip().lstrip("@")
+                    if _USERNAME_RE.fullmatch(handle):
+                        return handle
+        except Exception:
+            logger.debug("Kontoschalter in der X-Navigation nicht lesbar.", exc_info=True)
+        return ""
 
     def _article_data(self, article: Any, query: str) -> Optional[dict[str, Any]]:
         try:

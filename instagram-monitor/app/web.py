@@ -761,6 +761,7 @@ def create_app(
                 data.get("limit", 10),
                 data.get("sort", "latest"),
                 data.get("exclude_reposts", False),
+                data.get("source", "search"),
             )
         except (TypeError, ValueError) as exc:
             return _x_error(exc, 400)

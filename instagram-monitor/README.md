@@ -73,10 +73,33 @@ und „alle neuen“-Downloads. Gesucht werden nur sichtbare X-Beitragskarten mi
 Video. Statuslinks werden strikt auf `https://x.com/<name>/status/<id>`
 normalisiert und anhand der Beitrags-ID dedupliziert.
 
+### Eigene Lesezeichen und Likes („Verlauf“)
+
+Neben der Suche gibt es zwei Knöpfe für deine eigenen Listen – dieselben, die
+in der X-App unter **Verlauf** in den Reitern „Lesezeichen“ und ♥ stehen:
+
+* **🔖 Lesezeichen** – deine gespeicherten Beiträge (`x.com/i/bookmarks`).
+* **♥ Likes** – deine gelikten Beiträge. Der dafür nötige eigene
+  Benutzername wird aus der angemeldeten Oberfläche gelesen, nicht
+  abgefragt.
+
+Beide brauchen **keinen Suchbegriff**; Sortierung und „Reposts ausschließen“
+gelten dort nicht. Die Anzahl (1–50) begrenzt wie bei der Suche, wie weit
+gescrollt wird – bei langen Listen den Knopf einfach erneut drücken, bereits
+geladene Beiträge werden übersprungen. Eine leere Liste ist kein Fehler,
+sondern schlicht ein Ergebnis mit null Treffern. Ansonsten verhalten sich
+beide genau wie die Suche: dieselbe Auswahl, dieselben Downloads, dieselbe
+Erledigt-Liste.
+
+Beides funktioniert auch **vom Handy aus** – nur die Passworteingabe bleibt
+dem PC selbst vorbehalten.
+
 Downloads landen deterministisch unter:
 
 ```text
 <Download-Ordner>/X/<bereinigter-suchbegriff>/Videos/
+<Download-Ordner>/X/Lesezeichen/Videos/
+<Download-Ordner>/X/Likes/Videos/
 ```
 
 `yt-dlp` lädt die beste verfügbare Videoqualität mit Audio. Ist FFmpeg

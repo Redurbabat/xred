@@ -2128,6 +2128,8 @@ function showXVideos(){
         <label class="x-check"><input id="x_no_reposts" type="checkbox"> Reposts ausschließen</label>
         <div class="x-search-actions">
           <button class="btn" id="x_search_btn" onclick="xStartSearch()">Videos suchen</button>
+          <button class="btn ghost" id="x_bookmarks_btn" onclick="xStartCollection('bookmarks')" title="Videos aus deinen X-Lesezeichen">🔖 Lesezeichen</button>
+          <button class="btn ghost" id="x_likes_btn" onclick="xStartCollection('likes')" title="Videos aus deinen X-Likes">♥ Likes</button>
           <button class="btn ghost" id="x_search_cancel" onclick="xCancelSearch()" style="display:none">Abbrechen</button>
         </div>
       </div>
@@ -2174,7 +2176,7 @@ async function xLoadStatus(){
   if(data.local===false) xSetLoginMode(false);
   if(!data.available){
     label.textContent="Nicht verfügbar"; label.classList.add("bad");
-    login.disabled=true; $("x_search_btn").disabled=true;
+    login.disabled=true; xStartButtons().forEach(b=>b.disabled=true);
     if(submit) submit.disabled=true;
     xSetWarning(data.warning||data.error||"X-Suche ist auf diesem Gerät nicht verfügbar.");
   }else{
@@ -2237,11 +2239,21 @@ async function xSubmitLogin(){
 }
 
 async function xStartSearch(){
-  const payload={query:$("x_query").value,limit:$("x_limit").value,
-    sort:$("x_sort").value,exclude_reposts:$("x_no_reposts").checked};
-  const btn=$("x_search_btn"); btn.disabled=true;
+  return xStartJob({query:$("x_query").value,sort:$("x_sort").value,
+    exclude_reposts:$("x_no_reposts").checked,source:"search"},"x_search_btn");
+}
+
+// Eigene Listen aus dem X-Bereich „Verlauf“: Lesezeichen und Likes.
+// Suchbegriff, Sortierung und Repost-Filter gelten dort nicht.
+async function xStartCollection(source){
+  return xStartJob({source:source}, source==="likes"?"x_likes_btn":"x_bookmarks_btn");
+}
+
+async function xStartJob(fields,btnId){
+  const payload=Object.assign({limit:$("x_limit").value},fields);
+  const btn=$(btnId); if(btn) btn.disabled=true;
   const {data}=await api("/api/x/search",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-  btn.disabled=false;
+  if(btn) btn.disabled=false;
   if(data.error){ toast(data.error,"err"); xSetWarning(data.error); return; }
   xResults=[]; xSelected.clear(); xRenderResults(); xLastNotice=""; xSchedulePoll(100);
 }
@@ -2287,10 +2299,17 @@ async function xPollJobs(){
   else if(s.finished||d.finished) xLoadStatus();
 }
 
+// Suche, Lesezeichen und Likes teilen sich einen Auftrag – es darf immer
+// nur einer davon laufen, deshalb werden alle drei gemeinsam gesperrt.
+function xStartButtons(){
+  return ["x_search_btn","x_bookmarks_btn","x_likes_btn"].map(id=>$(id)).filter(Boolean);
+}
+
 function xApplyJobs(search,download){
   const searching=!!search.running, downloading=!!download.running;
-  const sb=$("x_search_btn"), sc=$("x_search_cancel"), dc=$("x_download_cancel");
-  if(sb) sb.disabled=!xAvailable||searching||downloading;
+  const sc=$("x_search_cancel"), dc=$("x_download_cancel");
+  const busy=!xAvailable||searching||downloading;
+  xStartButtons().forEach(b=>b.disabled=busy);
   if(sc){ sc.style.display=searching?"":"none"; sc.disabled=false; }
   if(dc){ dc.style.display=downloading?"":"none"; dc.disabled=false; }
   const box=$("x_progress"), text=$("x_progress_text"), fill=$("x_progress_fill");
