@@ -1,0 +1,50 @@
+# Abhängigkeiten der Instagram-Monitor-Anwendung
+# Installation:  pip install -r requirements.txt
+#
+# Die Versionen sind auf die jeweils nächste HAUPTversion nach oben
+# begrenzt (z. B. <5). Grund: Ein großes Versionssprung-Update (v4 → v5)
+# bringt oft Änderungen mit, die eine App kaputt machen können. Sicherheits-
+# und Fehlerkorrekturen innerhalb der Reihe werden weiterhin installiert.
+
+# Moderne GUI auf Basis von Tkinter
+customtkinter>=5.2.2,<6
+
+# Offiziell dokumentiertes Open-Source-Tool zum Abrufen ÖFFENTLICHER
+# Instagram-Inhalte. Es umgeht keine Zugriffsbeschränkungen: private
+# Profile ohne Berechtigung sind nicht zugänglich und werden von der
+# Anwendung übersprungen. (Instaloader ändert sich häufig – daher fest
+# auf die 4er-Reihe begrenzt.)
+instaloader>=4.14,<5
+
+# Plattformübergreifende Desktop-Benachrichtigungen (optional; ohne
+# plyer schreibt die App Benachrichtigungen nur in das Log-Fenster).
+plyer>=2.1.0,<3
+
+# Lokale Browser-Oberfläche (web.py / start-web.bat) – der Server läuft
+# ausschließlich auf 127.0.0.1 (dem eigenen Rechner).
+flask>=3.0,<4
+
+# Sichtbare lokale X-Browser-Sitzung (nur Desktop-Web; Android importiert
+# diese Abhängigkeit nicht). Chromium wird EINMALIG separat installiert:
+#   python -m playwright install chromium
+playwright>=1.55,<2
+
+# Extraktion/Download validierter öffentlicher X-Beitragslinks. Wird als
+# Python-Bibliothek verwendet, nie über eine Shell mit Nutzereingaben.
+yt-dlp>=2025.1.15,<2027
+
+# HTTP-Zugriffe (Vorschaubild-Proxy der Web-Oberfläche; wird von
+# instaloader ohnehin mitinstalliert).
+requests>=2.31,<3
+
+# Übernahme der bestehenden Instagram-Anmeldung aus dem Browser
+# ("Aus Browser übernehmen"). Vermeidet den Instagram-Sicherheits-
+# Checkpoint, weil KEINE neue Anmeldung erfolgt, sondern die im Browser
+# vorhandenen instagram.com-Cookies wiederverwendet werden.
+browser_cookie3>=0.19,<1
+
+# Liest den Text aus PDF-Dateien (für "Liste aus Datei importieren", falls
+# du deine Gefolgt-/Follower-Liste als PDF hast). Nur dafür nötig – JSON,
+# HTML, CSV und Textlisten funktionieren auch ohne dieses Paket.
+pypdf>=4,<7
+

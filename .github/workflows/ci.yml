@@ -1,0 +1,43 @@
+# Automatische Prüfung bei jedem Push / Pull Request.
+# Läuft auf GitHub und stellt sicher, dass der Code fehlerfrei aussieht
+# (ruff) und die Tests bestehen (pytest) – BEVOR etwas auf main landet.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Linting & Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: instagram-monitor
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Werkzeuge & Laufzeit-Abhängigkeiten installieren
+        # Nur die für Tests nötigen Pakete (die Desktop-GUI-Pakete
+        # customtkinter/plyer werden hier nicht gebraucht).
+        run: pip install ruff pytest flask "instaloader<5" requests
+
+      - name: JavaScript-Syntax prüfen
+        # Kein Python-Test sieht app.js – die Datei wird nur als statische
+        # Datei ausgeliefert. Ein Syntaxfehler dort legt die komplette
+        # Oberfläche lahm und käme sonst grün durch die Prüfung.
+        # node liegt auf ubuntu-latest bereits vor, kein npm install nötig.
+        run: node --check app/static/app.js
+
+      - name: Ruff (Linter)
+        run: ruff check .
+
+      - name: Pytest (Tests)
+        run: python -m pytest

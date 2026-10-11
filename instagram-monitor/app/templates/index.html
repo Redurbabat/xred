@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Insta-X Monitor</title>
+<link rel="icon" href="/icon.svg">
+<link rel="apple-touch-icon" href="/icon.svg">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Insta-X">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div id="bg"></div>
+<div id="bgov"></div>
+<header>
+  <div class="nav">
+    <button class="iconbtn" id="back_btn" title="Zurück" onclick="goBack()" style="display:none">←</button>
+    <div class="logo" onclick="showStart()" style="cursor:pointer">Insta-X Monitor</div>
+    <div class="search">
+      <input id="q_user" list="follwd" placeholder="Suchen (Name oder Link) …"
+             onkeydown="if(event.key==='Enter')openProfile($('q_user').value)">
+      <datalist id="follwd"></datalist>
+    </div>
+    <div class="right">
+      <button class="iconbtn" title="X Videos" onclick="showXVideos()">𝕏</button>
+      <button class="iconbtn" title="Suchen" onclick="showSearch()">🔍</button>
+      <button class="iconbtn" title="Mein Profil" onclick="showMe()">👤</button>
+      <button class="iconbtn" id="manage_btn" title="Einstellungen" onclick="toggleManage()">⚙️</button>
+      <button class="iconbtn" id="theme_btn" title="Hell/Dunkel" onclick="toggleTheme()">🌙</button>
+      <button class="iconbtn" id="logout_btn" title="Abmelden" onclick="doLogout()" style="display:none">🚪</button>
+      <span class="whoami" id="whoami"></span>
+    </div>
+  </div>
+</header>
+
+<!-- Warnleiste: abgelaufene Anmeldung / aktive Drossel-Pause -->
+<div id="warnbar" style="display:none;background:#7a1f2b;color:#fff;padding:8px 14px;
+     font-size:14px;text-align:center;cursor:pointer" onclick="scrollToLogin()"></div>
+
+<!-- Fortschrittsbalken für laufende Downloads -->
+<div id="dlbar" style="display:none;padding:6px 14px;background:var(--bg2);font-size:13px">
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+    <span id="dlbar_text" onclick="showDownloadsLive()" style="cursor:pointer;flex:1"
+          title="Antippen: Was wird gerade geladen?">Download …</span>
+    <button class="btn ghost small" onclick="cancelBulkAll()">Abbrechen</button>
+  </div>
+  <div style="height:6px;border-radius:4px;background:var(--border);margin-top:5px;overflow:hidden">
+    <div id="dlbar_fill" style="height:100%;width:0;background:var(--accent);transition:width .3s"></div>
+  </div>
+</div>
+
+<main>
+  <!-- Anmeldung -->
+  <div class="panel" id="login_panel" style="display:none">
+    <h3>Anmelden</h3>
+    <div class="hint">Angemeldet siehst du den Feed deiner Abos, Stories/Highlights und
+      private Konten, denen du folgst. Das Passwort wird nicht gespeichert.</div>
+    <div class="rowflex" style="margin-top:10px">
+      <button class="btn ghost" onclick="importSession()" id="imp_btn">🔓 Aus Browser übernehmen (empfohlen)</button>
+    </div>
+    <div class="rowflex" style="margin-top:10px">
+      <input type="text" id="lg_user" placeholder="Benutzername" style="flex:1" autocomplete="username">
+      <input type="password" id="lg_pass" placeholder="Passwort" style="flex:1" autocomplete="current-password">
+    </div>
+    <div class="rowflex" id="code_row" style="margin-top:8px; display:none">
+      <input type="text" id="lg_code" placeholder="Zwei-Faktor-Code" style="flex:1">
+    </div>
+    <div class="rowflex" style="margin-top:8px">
+      <button class="btn" id="lg_btn" onclick="doLogin()">Anmelden</button>
+    </div>
+    <details>
+      <summary>Erweitert: Anmeldung per sessionid (klappt immer)</summary>
+      <div class="hint">Im Browser bei instagram.com anmelden → F12 → Anwendung/Application →
+        Cookies → instagram.com → Wert von <b>sessionid</b> kopieren.</div>
+      <div class="rowflex" style="margin-top:8px">
+        <input type="text" id="lg_sid" placeholder="sessionid-Wert" style="flex:1">
+        <button class="btn ghost" id="sid_btn" onclick="doSessionId()">Anmelden</button>
+      </div>
+    </details>
+  </div>
+
+  <!-- Verwalten -->
+  <div class="panel" id="manage_panel" style="display:none">
+    <div class="rowflex" style="justify-content:space-between">
+      <h3 style="margin:0">Verwalten</h3>
+      <span style="display:flex;gap:8px">
+        <button class="btn ghost small" onclick="showDownloads()">📥 Verlauf</button>
+        <button class="btn ghost small" onclick="doLogout()">Abmelden</button>
+      </span>
+    </div>
+    <div id="save_tools" style="margin-top:12px;padding:10px 12px;border:1px solid #333;border-radius:12px">
+      <div style="font-weight:700;margin-bottom:4px">🔗 Direkt aus Instagram speichern</div>
+      <div class="hint" style="margin-bottom:8px">Einen Beitrag/Reel mit einem Klick bzw. Tipp aus dem echten Instagram in den richtigen Fotos-/Videos-Ordner laden.</div>
+      <div id="save_tools_body"></div>
+    </div>
+    <label class="rowflex" style="margin-top:10px">
+      <input type="checkbox" id="opt_captions" style="width:16px;height:16px" onchange="saveAppSettings()">
+      Bildunterschrift als .txt mitspeichern
+    </label>
+    <label class="rowflex" style="margin-top:6px">
+      <input type="checkbox" id="opt_autoplay" style="width:16px;height:16px" onchange="toggleAutoplay()">
+      Videos im Feed automatisch abspielen (aus = Datensparmodus)
+    </label>
+    <label class="rowflex" style="margin-top:6px">
+      <input type="checkbox" id="opt_bg" style="width:16px;height:16px" onchange="toggleBg()">
+      Tägliches Hintergrundfoto aus deinen Downloads (jeden Tag ein anderes)
+    </label>
+    <label class="rowflex" style="margin-top:6px">
+      <input type="checkbox" id="opt_social" style="width:16px;height:16px" onchange="saveAppSettings()">
+      Gefolgt-/Follower-Listen im Hintergrund aktuell halten
+      <select id="opt_social_min" onchange="saveAppSettings()" style="background:transparent;border:0;color:inherit">
+        <option value="30">alle 30 Min</option><option value="60" selected>stündlich</option>
+        <option value="180">alle 3 Std</option><option value="720">2× täglich</option>
+      </select>
+    </label>
+    <label class="rowflex" style="margin-top:6px">
+      <input type="checkbox" id="opt_notify" style="width:16px;height:16px" onchange="toggleNotify()">
+      Browser-Benachrichtigung bei neuen Beiträgen
+    </label>
+    <label class="rowflex" style="margin-top:6px;flex-wrap:wrap">
+      <input type="checkbox" id="opt_quiet" style="width:16px;height:16px" onchange="saveAppSettings()">
+      Nachtpause für Hintergrund-Abrufe
+      von <input type="time" id="opt_quiet_from" value="23:00" onchange="saveAppSettings()"
+                 style="background:transparent;color:inherit;border:1px solid var(--border);border-radius:6px;padding:2px 4px">
+      bis <input type="time" id="opt_quiet_until" value="07:00" onchange="saveAppSettings()"
+                 style="background:transparent;color:inherit;border:1px solid var(--border);border-radius:6px;padding:2px 4px">
+    </label>
+    <div class="hint">Downloads und die Vollbild-/Reels-Wiedergabe erfolgen immer in Originalqualität.</div>
+    <div class="hint" id="dl_dir"></div>
+    <div class="rowflex" style="margin-top:6px">
+      <input id="set_dldir" placeholder="Download-Ordner ändern (kompletter Pfad) …" style="flex:1">
+      <button class="btn ghost small" onclick="saveDownloadDir()">Ordner ändern</button>
+    </div>
+    <div class="hint">☁️ Für TeraBox / Google Fotos: Trage hier den Sync-Ordner der
+      jeweiligen Desktop-App ein (z. B. <code>C:\Users\du\TeraBox\Instagram</code>).
+      Die Cloud-App lädt dann alles darin automatisch hoch – bei Google über
+      „Drive für Desktop" mit aktiviertem Google-Fotos-Backup für den Ordner.</div>
+    <div class="rowflex">
+      <label class="hint" style="margin:0">Feed-Profile:
+        <select id="feed_profiles">
+          <option value="10">erste 10</option><option value="20">erste 20</option>
+          <option value="50">erste 50</option><option value="0">alle</option>
+        </select></label>
+      <label class="hint" style="margin:0">je Profil:
+        <select id="feed_per">
+          <option value="3">3</option><option value="6">6</option><option value="12">12</option>
+        </select></label>
+      <button class="btn ghost" onclick="startFeed()">Feed aktualisieren</button>
+    </div>
+    <hr style="border:0; border-top:1px solid var(--border); margin:14px 0">
+    <div class="rowflex">
+      <button class="btn ghost" id="fl_btn" onclick="loadFollowing()">Abo-Liste laden</button>
+      <label class="hint" style="margin:0">je Konto:
+        <select id="bulk_count"><option>1</option><option selected>3</option><option>6</option><option>12</option></select></label>
+      <label class="hint" style="margin:0">ab Datum: <input type="date" id="bulk_since"></label>
+      <button class="btn ghost" id="bulk_btn" onclick="startBulk()">⬇ Ausgewählte auf PC</button>
+      <button class="btn ghost" id="bulk_cancel" onclick="cancelBulk()" style="display:none">Abbrechen</button>
+    </div>
+    <div class="hint" id="bulk_text"></div>
+    <div class="rowflex" style="margin-top:6px">
+      <button class="btn ghost small" onclick="selectAllFollow(true)">Alle</button>
+      <button class="btn ghost small" onclick="selectAllFollow(false)">Keine</button>
+      <input id="fl_filter" placeholder="Liste filtern …" style="flex:1" oninput="filterFollow()">
+    </div>
+    <div id="fl_list" style="margin-top:10px; max-height:260px; overflow:auto"></div>
+
+    <hr style="border:0; border-top:1px solid var(--border); margin:14px 0">
+    <div><b>📄 Liste aus Datei importieren</b></div>
+    <div class="hint">Falls Instagram gerade eine Sicherheitsbestätigung
+      verlangt: Lade hier deine eigene Gefolgt-/Follower-Liste als Datei hoch –
+      dann sind die Namen sofort da, ganz ohne Instagram-Abruf. Am besten
+      klappt Instagrams offizieller Datenexport (JSON/HTML); auch eine einfache
+      Namensliste (ein Name pro Zeile), CSV oder PDF geht.</div>
+    <div class="rowflex" style="margin-top:8px">
+      <input type="file" id="imp_file" accept=".zip,.json,.html,.htm,.csv,.txt,.pdf"
+             style="flex:1;min-width:0">
+    </div>
+    <div class="rowflex" style="margin-top:6px">
+      <button class="btn" onclick="importList('zip')">⬆ Export-ZIP komplett übernehmen (Gefolgt + Follower)</button>
+    </div>
+    <div class="rowflex" style="margin-top:6px">
+      <button class="btn ghost" onclick="importList('following')">⬆ Als „Gefolgt“ übernehmen</button>
+      <button class="btn ghost" onclick="importList('followers')">⬆ Als „Follower“ übernehmen</button>
+    </div>
+    <div class="hint" id="imp_info"></div>
+
+    <hr style="border:0; border-top:1px solid var(--border); margin:14px 0">
+    <div><b>⏰ Automatischer Download</b></div>
+    <div class="hint">Lädt zu den eingestellten Uhrzeiten täglich automatisch die
+      neuesten Beiträge aller deiner Abos auf den PC. Dafür muss die App laufen
+      (PC an, dieses Fenster offen) und du angemeldet sein.</div>
+    <label class="rowflex" style="margin-top:8px">
+      <input type="checkbox" id="sch_enabled" style="width:16px;height:16px"> automatisch herunterladen
+    </label>
+    <label class="rowflex" style="margin-top:6px">
+      <input type="checkbox" id="sch_stories" style="width:16px;height:16px"> dabei auch aktuelle Stories mitladen
+    </label>
+    <div class="rowflex" style="margin-top:8px">
+      <span class="hint" style="margin:0">Uhrzeiten:</span>
+      <span id="sch_times" class="rowflex"></span>
+      <button class="btn ghost small" onclick="addSchedTime('')">+ Zeit</button>
+    </div>
+    <div class="rowflex" style="margin-top:8px">
+      <label class="hint" style="margin:0">Beiträge je Konto:
+        <select id="sch_per"><option>1</option><option selected>3</option><option>6</option><option>12</option></select></label>
+      <button class="btn" onclick="saveSchedule()">Zeitplan speichern</button>
+    </div>
+    <div class="hint" id="sch_info"></div>
+  </div>
+
+  <!-- Stories-Reihe -->
+  <div class="stories" id="stories_row" style="display:none"></div>
+
+  <!-- Profil-Kopf (nur in Profil-Ansicht) -->
+  <div id="pf_head" style="display:none"></div>
+
+  <!-- Aktionsleiste (nur im Feed) -->
+  <div class="filterbar" id="filterbar" style="display:none">
+    <button class="chip" onclick="downloadFeedToPC()">⬇ Alle auf PC</button>
+  </div>
+
+  <!-- Unterleiste (z. B. Sammlungs-Chips in „Gespeichert") -->
+  <div id="subbar"></div>
+
+  <!-- Feed / Raster -->
+  <div id="content"></div>
+  <div id="more" style="text-align:center; margin:10px 0"></div>
+</main>
+
+<!-- Untere Navigation (Handy) -->
+<nav class="bottomnav" id="bottomnav">
+  <button id="nav_home" class="on" title="Start" onclick="showStart()">🏠</button>
+  <button id="nav_search" title="Suchen" onclick="showSearch()">🔍</button>
+  <button id="nav_x" title="X Videos" onclick="showXVideos()">𝕏</button>
+  <button id="nav_reels" title="Reels" onclick="openReels()">🎬</button>
+  <button id="nav_saved" title="Gespeichert" onclick="showSaved()">🔖</button>
+  <button id="nav_profile" title="Mein Profil" onclick="showMe()">👤</button>
+</nav>
+
+<!-- Reels-Vollbild-Feed -->
+<div class="reelsov" id="reels">
+  <button class="close" onclick="closeReels()" style="position:fixed;top:12px;right:16px;font-size:30px;color:#fff;z-index:3">✕</button>
+  <div id="reels_track"></div>
+</div>
+
+<!-- Auswahl-Leiste (Mehrfachauswahl im Raster) -->
+<div id="selbar">
+  <span id="selcount">0 ausgewählt</span>
+  <span id="selactions" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end"></span>
+</div>
+
+<!-- Pull-to-refresh-Anzeige -->
+<div id="ptr">↓ Zum Aktualisieren loslassen</div>
+
+<!-- Hilfe -->
+<div class="ov" id="help">
+  <button class="close" onclick="$('help').classList.remove('open')">✕</button>
+  <div class="panel" style="max-width:420px">
+    <h3>Tastatur & Tipps</h3>
+    <div class="hint" style="color:var(--text)">
+      • Doppelklick/-tipp auf ein Bild → merken (Herz)<br>
+      • In Lightbox/Story: ← → blättern, Esc schließen<br>
+      • 🔖 Gespeichert · 🔍 Suchen · ⚙️ Verwalten · 🌙 Hell/Dunkel<br>
+      • In der Lightbox: 💬 zeigt Kommentare<br>
+      • Suche: „#reisen" zeigt Beiträge zum Hashtag (Entdecken)<br>
+      • „?" öffnet diese Hilfe<br>
+      • Auf dem Handy: über das Browser-Menü „Zum Startbildschirm hinzufügen"
+        → läuft dann wie eine App.
+    </div>
+  </div>
+</div>
+
+<!-- Lightbox -->
+<div class="ov" id="lb">
+  <button class="close" onclick="closeLightbox()">✕</button>
+  <button class="arrow l" id="lb_l" onclick="lbNav(-1)">‹</button>
+  <button class="arrow r" id="lb_r" onclick="lbNav(1)">›</button>
+  <div class="dlrow" id="lb_dl"></div>
+  <div class="stage" id="lb_stage"></div>
+  <div class="dots" id="lb_dots"></div>
+  <div class="cap2" id="lb_cap"></div>
+  <div class="sheet" id="lb_cmts"></div>
+</div>
+
+<!-- Story-Viewer -->
+<div class="ov" id="sv">
+  <button class="close" onclick="closeStory()">✕</button>
+  <button class="arrow l" onclick="storyNav(-1)">‹</button>
+  <button class="arrow r" onclick="storyNav(1)">›</button>
+  <div class="lbar" id="sv_bar"></div>
+  <div class="dlrow" id="sv_dl"></div>
+  <div class="stage" id="sv_stage"></div>
+</div>
+
+<div id="toasts"></div>
+<button id="top" onclick="window.scrollTo({top:0,behavior:'smooth'})">↑</button>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
