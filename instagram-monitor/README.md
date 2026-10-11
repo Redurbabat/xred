@@ -411,9 +411,10 @@ der komplette Server (Python/Flask/Instaloader) **eingebettet** ist –
 die App läuft damit vollständig auf dem Handy:
 
 1. Auf dem Handy die **Releases-Seite** des Projekts öffnen:
-   `https://github.com/RedBbt/insta-x/releases` → Release **„📱
+   `https://github.com/Redurbabat/xred/releases` → Release **„📱
    Instagram Monitor – Android-App"** → `InstagramMonitor.apk`
-   herunterladen.
+   herunterladen. (Das Repo ist privat – auf dem Handy also vorher bei
+   GitHub anmelden.)
 2. Die Datei antippen → Installation aus unbekannten Quellen einmalig
    erlauben → installieren.
 3. App öffnen (erster Start braucht ein paar Sekunden) → anmelden, am
