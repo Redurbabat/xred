@@ -59,8 +59,11 @@ jobs:
       # eingebettete Python (3.12).
       - uses: actions/setup-python@v5
         with:
+          # Kein pip-Cache: Dieser Job installiert keine Python-Pakete
+          # (Chaquopy holt sie selbst im Gradle-Build). Der Cache-Schritt
+          # findet am Ende kein ~/.cache/pip und lässt den ganzen Lauf
+          # scheitern – obwohl die APK längst fertig ist.
           python-version: "3.12"
-          cache: pip
 
       - uses: gradle/actions/setup-gradle@v4
         with:
