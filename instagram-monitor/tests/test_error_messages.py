@@ -53,3 +53,50 @@ def test_fetch_error_uses_plain_text(dl):
     err = dl._fetch_error(BAD_JSON, "Abo-Liste")
     assert "Expecting value" not in str(err)
     assert "abgewiesen" in str(err)
+
+
+# --- X-Downloadfehler verständlich machen ---------------------------------
+
+
+def test_terminal_colour_codes_never_reach_the_interface():
+    """yt-dlp färbt seine Meldungen ein; in der Oberfläche stand dann
+
+    „[0;31mERROR:[0m“ mitten im Text.
+    """
+    from app.x_service import public_error
+
+    roh = "\x1b[0;31mERROR:\x1b[0m [twitter] 123: Something went wrong"
+    sauber = public_error(RuntimeError(roh))
+    assert "\x1b" not in sauber
+    assert "[0;31m" not in sauber
+    assert "Something went wrong" in sauber
+
+
+def test_no_video_found_names_all_three_likely_causes():
+    from app.x_service import XService
+
+    text = XService._map_download_error(
+        RuntimeError("ERROR: [twitter] 2109614135096848599: No video could be found in this tweet")
+    )
+    assert "Fotos" in text          # reiner Bildbeitrag
+    assert "ZITIERTEN" in text      # Video steckt im zitierten Beitrag
+    assert "sensibel" in text       # Anmeldung nötig
+    assert "No video could be found" not in text
+
+
+def test_an_expired_session_is_named_as_such():
+    from app.x_service import XService
+
+    for roh, erwartet in [
+        ("ERROR: 401 Unauthorized", "abgelaufen"),
+        ("ERROR: This tweet does not exist", "gibt es nicht mehr"),
+        ("ERROR: rate limit exceeded", "gebremst"),
+    ]:
+        assert erwartet in XService._map_download_error(RuntimeError(roh))
+
+
+def test_an_unknown_error_is_still_passed_through():
+    from app.x_service import XService
+
+    text = XService._map_download_error(RuntimeError("Irgendein neuer Fehler von X"))
+    assert "Irgendein neuer Fehler von X" in text

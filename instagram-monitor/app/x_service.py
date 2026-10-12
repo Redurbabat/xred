@@ -52,6 +52,7 @@ _PREVIEW_HOSTS = {"pbs.twimg.com", "video.twimg.com", "abs.twimg.com"}
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
 # Sitzungs-Cookies von X: auth_token ist 40 Hex-Zeichen, ct0 je nach
 # Zeitpunkt 32 bis 160. Grosszuegig gefasst, aber ohne Sonderzeichen.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _TOKEN_MIN, _TOKEN_MAX = 16, 200
 _TOKEN_RE = re.compile(rf"^[0-9a-fA-F]{{{_TOKEN_MIN},{_TOKEN_MAX}}}$")
 # Von Hand hinterlegte Sitzung (Token-Anmeldung) im Profilordner.
@@ -189,6 +190,9 @@ class _DownloadCancelled(Exception):
 def public_error(exc: BaseException | str) -> str:
     """Return a short error without cookies, tokens, profile paths or dumps."""
     text = str(exc).replace("\r", " ").replace("\n", " ").strip()
+    # yt-dlp faerbt seine Meldungen fuer das Terminal ein. In der Oberflaeche
+    # standen die Steuerzeichen als "[0;31mERROR:[0m" mitten im Text.
+    text = _ANSI_RE.sub("", text)
     text = _SECRET_RE.sub(lambda m: f"{m.group(1)}=<redacted>", text)
     text = re.sub(r"(?i)--cookies(?:-from-browser)?\s+\S+", "--cookies <redacted>", text)
     text = re.sub(r"\s+", " ", text)
@@ -1908,9 +1912,35 @@ class XService:
         if isinstance(exc, _DownloadCancelled):
             return "Download abgebrochen."
         message = public_error(exc)
-        if "ffmpeg" in message.lower():
+        lower = message.lower()
+        if "ffmpeg" in lower:
             return (
                 "FFmpeg wird für diese Video-/Audio-Kombination benötigt. Bitte FFmpeg installieren "
                 "und die Anwendung neu starten."
+            )
+        if "no video could be found" in lower:
+            return (
+                "X gibt für diesen Beitrag kein Video heraus. Meist einer von drei "
+                "Gründen: Der Beitrag enthält nur Fotos oder ein GIF; das Video "
+                "steckt im ZITIERTEN Beitrag (dann dessen Link verwenden); oder er "
+                "ist als sensibel eingestuft und die Anmeldung fehlt bzw. ist "
+                "abgelaufen – in dem Fall oben die X-Sitzung erneuern."
+            )
+        if "nsfw" in lower or "age" in lower and "restrict" in lower:
+            return (
+                "Der Beitrag ist altersbeschränkt. Dafür braucht der Download eine "
+                "gültige X-Anmeldung – bitte oben die Sitzung erneuern."
+            )
+        if "protected" in lower or "not authorized" in lower or "401" in lower:
+            return (
+                "Kein Zugriff auf diesen Beitrag. Entweder ist das Konto geschützt "
+                "oder die X-Anmeldung ist abgelaufen."
+            )
+        if "does not exist" in lower or "404" in lower:
+            return "Den Beitrag gibt es nicht mehr – gelöscht oder das Konto ist weg."
+        if "rate limit" in lower or "429" in lower:
+            return (
+                "X hat vorübergehend gebremst (zu viele Anfragen). Bitte etwas "
+                "warten und erneut versuchen."
             )
         return message
