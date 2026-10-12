@@ -111,6 +111,19 @@ und „alle neuen“-Downloads. Gesucht werden nur sichtbare X-Beitragskarten mi
 Video. Statuslinks werden strikt auf `https://x.com/<name>/status/<id>`
 normalisiert und anhand der Beitrags-ID dedupliziert.
 
+### Blickschutz (👁 / 🙈)
+
+Der Knopf neben „♥ Likes" verbirgt in **allen** X-Ansichten – Suche,
+Lesezeichen und Likes – die Vorschaubilder, die Textauszüge und die
+Namen in „Letzte X-Downloads". Gedacht für Situationen, in denen jemand
+auf den Bildschirm sehen könnte.
+
+Wichtig: Das betrifft **nur die Anzeige**. Die heruntergeladenen Dateien
+werden nicht angefasst, nicht verschoben und nicht versteckt. Auswählen,
+„Alle auswählen" und Herunterladen funktionieren bei verborgener
+Vorschau unverändert. Die Einstellung bleibt nach einem Neustart
+erhalten (pro Browser bzw. Gerät).
+
 ### Einzelnen Link herunterladen
 
 Unter der Suche gibt es das Feld **„Oder Link einfügen”**. Dort passt

@@ -2086,6 +2086,32 @@ async function doLogout(){ if(confirm("Wirklich abmelden?")){ await api("/api/lo
 let xResults=[], xSelected=new Set(), xPollTimer=null, xLastNotice="", xAvailable=true;
 // post_id -> Grund, warum der Download scheiterte (wird auf der Karte gezeigt).
 const xFailed=new Map();
+
+// Blickschutz: verbirgt Vorschaubilder und Textauszüge in ALLEN X-Ansichten
+// (Suche, Lesezeichen, Likes). Betrifft ausschliesslich die Anzeige – die
+// heruntergeladenen Dateien bleiben unberuehrt. Die Wahl ueberlebt einen
+// Neustart; schlaegt der Speicher fehl (privates Fenster), bleibt sie
+// wenigstens fuer diese Sitzung bestehen.
+let xPrivacy=false;
+try{ xPrivacy=localStorage.getItem("x_privacy")==="1"; }catch(e){}
+
+function xTogglePrivacy(){
+  xPrivacy=!xPrivacy;
+  try{ localStorage.setItem("x_privacy", xPrivacy?"1":"0"); }catch(e){}
+  xUpdatePrivacyButton();
+  xRenderResults();
+  xRenderRecent(xRecent);
+}
+
+function xUpdatePrivacyButton(){
+  const b=$("x_privacy_btn"); if(!b) return;
+  b.textContent=xPrivacy?"🙈 Blickschutz an":"👁 Blickschutz aus";
+  b.title=xPrivacy
+    ? "Vorschaubilder und Texte sind verborgen. Klicken zum Einblenden."
+    : "Vorschaubilder und Texte verbergen – nur die Anzeige, die Dateien bleiben.";
+  b.setAttribute("aria-pressed", xPrivacy?"true":"false");
+  b.classList.toggle("active", xPrivacy);
+}
 // Anmelde-Token gegen CSRF: liefert der lokale Server nur an diesen PC.
 let xCsrfToken="";
 
@@ -2148,13 +2174,14 @@ function showXVideos(){
           <button class="btn" id="x_search_btn" onclick="xStartSearch()">Videos suchen</button>
           <button class="btn ghost" id="x_bookmarks_btn" onclick="xStartCollection('bookmarks')" title="Videos aus deinen X-Lesezeichen">🔖 Lesezeichen</button>
           <button class="btn ghost" id="x_likes_btn" onclick="xStartCollection('likes')" title="Videos aus deinen X-Likes">♥ Likes</button>
+          <button class="btn ghost" id="x_privacy_btn" onclick="xTogglePrivacy()">👁 Blickschutz aus</button>
           <button class="btn ghost" id="x_search_cancel" onclick="xCancelSearch()" style="display:none">Abbrechen</button>
         </div>
-        <label class="x-query x-link-row"><span>Oder Link einfügen (jeder X-Beitrag, auch ohne Suche)</span>
+      </div>
+      <div class="panel x-link-box">
+        <label class="x-link-field"><span>Oder Link einfügen (jeder X-Beitrag, auch ohne Suche)</span>
           <input id="x_link" maxlength="300" placeholder="https://x.com/name/status/123…" onkeydown="if(event.key==='Enter')xDownloadLink()"></label>
-        <div class="x-search-actions">
-          <button class="btn" id="x_link_btn" onclick="xDownloadLink()">Link herunterladen</button>
-        </div>
+        <button class="btn" id="x_link_btn" onclick="xDownloadLink()">Link herunterladen</button>
       </div>
       <div class="x-warning" id="x_warning" style="display:none"></div>
       <div class="x-progress" id="x_progress" style="display:none"><div class="x-progress-head"><span id="x_progress_text"></span><button class="btn ghost small" id="x_download_cancel" onclick="xCancelDownload()" style="display:none">Download abbrechen</button></div><div class="x-progress-track"><i id="x_progress_fill"></i></div></div>
@@ -2169,6 +2196,7 @@ function showXVideos(){
       <details class="panel x-recent"><summary>Letzte X-Downloads</summary><div id="x_recent" class="hint">Noch keine X-Downloads gespeichert.</div></details>
       <div class="hint x-legal">Lade nur öffentlich zugängliche Inhalte herunter, für die du die erforderlichen Rechte besitzt, und beachte die X-Nutzungsbedingungen. Die App umgeht keine Zugriffs- oder Schutzmechanismen.</div>
     </section>`;
+  xUpdatePrivacyButton();   // gemerkte Einstellung sofort anzeigen
   xLoadCsrf();
   xLoadStatus();
 }
@@ -2422,9 +2450,9 @@ function xRenderResults(){
     const date=p.published_at?new Date(p.published_at).toLocaleString("de-DE"):"";
     card.innerHTML=`
       <label class="x-select"><input type="checkbox" ${xSelected.has(p.post_id)?"checked":""} aria-label="Beitrag auswählen"><span></span></label>
-      <div class="x-preview">${p.preview_url?`<img loading="lazy" referrerpolicy="no-referrer" src="${esc(p.preview_url)}" alt="Vorschau">`:'<div class="empty">Keine Vorschau</div>'}<b>▶</b>${p.downloaded?'<i>✓ Gespeichert</i>':''}</div>
+      <div class="x-preview${xPrivacy?" hidden-preview":""}">${xPrivacy?'<div class="empty">Verborgen</div>':(p.preview_url?`<img loading="lazy" referrerpolicy="no-referrer" src="${esc(p.preview_url)}" alt="Vorschau">`:'<div class="empty">Keine Vorschau</div>')}<b>▶</b>${p.downloaded?'<i>✓ Gespeichert</i>':''}</div>
       <div class="x-card-body"><div class="x-author"><strong>${esc(p.author_name||p.username||"X")}</strong><span>@${esc(p.username||"")}</span></div>
-      ${date?`<time>${esc(date)}</time>`:""}<p>${esc(p.caption||"Kein Textauszug verfügbar.")}</p>
+      ${date?`<time>${esc(date)}</time>`:""}<p>${xPrivacy?"– verborgen –":esc(p.caption||"Kein Textauszug verfügbar.")}</p>
       ${xFailed.has(p.post_id)?`<p class="x-card-error">⚠ ${esc(xFailed.get(p.post_id))}</p>`:""}
       <div class="x-card-actions"><a class="btn ghost small" href="${esc(p.post_url)}" target="_blank" rel="noopener noreferrer">Auf X öffnen</a><button class="btn small" ${p.downloaded?"disabled":""}>${p.downloaded?"Gespeichert":(xFailed.has(p.post_id)?"Erneut versuchen":"Herunterladen")}</button></div></div>`;
     card.querySelector('.x-select input').onchange=e=>{ if(e.target.checked)xSelected.add(p.post_id);else xSelected.delete(p.post_id);xUpdateSelected(); };
@@ -2435,10 +2463,13 @@ function xRenderResults(){
 }
 
 function xUpdateSelected(){ const el=$("x_selected_count"); if(el) el.textContent=xSelected.size+" ausgewählt"; }
+let xRecent=[];
 function xRenderRecent(items){
   const box=$("x_recent"); if(!box) return;
-  if(!items.length){ box.textContent="Noch keine X-Downloads gespeichert."; return; }
-  box.innerHTML=items.map(item=>`<div class="x-recent-row"><span>@${esc(item.username||"")} · ${esc(item.search_query||"")}</span><a href="${esc(item.post_url)}" target="_blank" rel="noopener noreferrer">${timeAgo(item.downloaded_at)||"Auf X öffnen"} ↗</a></div>`).join("");
+  xRecent=items||[];
+  if(!xRecent.length){ box.textContent="Noch keine X-Downloads gespeichert."; return; }
+  const items2=xRecent;
+  box.innerHTML=items2.map(item=>`<div class="x-recent-row"><span>${xPrivacy?"– verborgen –":"@"+esc(item.username||"")+" · "+esc(item.search_query||"")}</span><a href="${esc(item.post_url)}" target="_blank" rel="noopener noreferrer">${timeAgo(item.downloaded_at)||"Auf X öffnen"} ↗</a></div>`).join("");
 }
 function xSelectAll(on){ xSelected.clear(); if(on)xResults.forEach(p=>{if(!p.downloaded)xSelected.add(p.post_id);}); xRenderResults(); }
 function xDownloadOne(postId){ xStartDownload("/api/x/download",{post_id:postId}); }
