@@ -14,6 +14,7 @@ import logging
 import queue
 import re
 import shutil
+import sys
 import threading
 import time
 import unicodedata
@@ -315,6 +316,22 @@ def validate_sort(value: Any) -> str:
     if sort not in {"latest", "top"}:
         raise XValidationError("Sortierung muss „Neueste“ oder „Top“ sein.")
     return sort
+
+
+def chromium_install_hint() -> str:
+    """Nennt den Befehl, der Chromium WIRKLICH an die richtige Stelle holt.
+
+    Die frühere Meldung riet zu ``python -m playwright install chromium``.
+    Wer das in der Eingabeaufforderung tippt, trifft damit das
+    System-Python – die App läuft aber in ihrer eigenen Umgebung unter
+    ``.venv``. Der Browser landete also neben der App und der Fehler blieb.
+    Deshalb hier der Pfad des laufenden Interpreters, der immer stimmt.
+    """
+    skript = "setup-x-browser.bat" if sys.platform.startswith("win") else "./setup-x-browser.sh"
+    return (
+        f"Am einfachsten einmalig {skript} ausführen. "
+        f'Oder von Hand: "{sys.executable}" -m playwright install chromium.'
+    )
 
 
 def validate_x_token(value: Any, field: str) -> str:
@@ -1084,8 +1101,8 @@ class XService:
                     message = public_error(exc)
                     if "executable" in message.lower() or "browser" in message.lower():
                         message = (
-                            "Playwright-Chromium fehlt oder startet nicht. Bitte einmalig "
-                            "`python -m playwright install chromium` ausführen."
+                            "Playwright-Chromium fehlt oder startet nicht. "
+                            + chromium_install_hint()
                         )
                     raise XUnavailableError(message) from exc
                 context.set_default_timeout(10_000)
@@ -1735,8 +1752,9 @@ class XService:
             )
         if "executable" in lower:
             return (
-                "Playwright-Chromium fehlt oder startet nicht. Bitte einmalig "
-                "`python -m playwright install chromium` ausführen und die Sitzung neu öffnen."
+                "Playwright-Chromium fehlt oder startet nicht. "
+                + chromium_install_hint()
+                + " Danach die Sitzung neu öffnen."
             )
         return f"X-Browserfehler: {message}"
 

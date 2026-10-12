@@ -41,6 +41,21 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM Chromium fuer die X-Videosuche. Playwright installiert nur, was fehlt -
+REM ist es schon da, ist der Aufruf in einer Sekunde durch. Vorher lief der
+REM Start ohne Browser durch und die X-Suche scheiterte erst beim Klicken,
+REM mit einem Hinweis auf "python -m playwright install", der ins falsche
+REM Python gezeigt haette.
+echo Chromium fuer die X-Suche wird geprueft ...
+".venv\Scripts\python.exe" -m playwright install chromium
+if errorlevel 1 (
+    echo.
+    echo HINWEIS: Chromium konnte nicht geholt werden. Instagram funktioniert
+    echo trotzdem; die X-VIDEOSUCHE bleibt bis dahin ohne Browser. Spaeter
+    echo einfach setup-x-browser.bat ausfuehren.
+    echo.
+)
+
 echo Browser-Oberflaeche startet ...
 ".venv\Scripts\python.exe" web.py
 if errorlevel 1 pause

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import queue
+import sys
 import threading
 import time
 from pathlib import Path
@@ -261,7 +262,11 @@ def test_download_failures_are_isolated_and_existing_posts_skip(tmp_path: Path):
 
 def test_missing_chromium_has_actionable_message():
     message = XService._map_browser_error(RuntimeError("Executable doesn't exist"))
-    assert "python -m playwright install chromium" in message
+    # Der Pfad des laufenden Interpreters, nicht das blosse "python": Unter
+    # Windows traf das sonst das System-Python statt der .venv der App.
+    assert sys.executable in message
+    assert "-m playwright install chromium" in message
+    assert "setup-x-browser" in message
 
 
 def test_secrets_are_removed_from_public_errors():
@@ -648,7 +653,7 @@ def test_closed_window_message_does_not_ask_for_a_playwright_install():
     assert "geschlossen" in message
     # Ein wirklich fehlendes Chromium meldet weiterhin den Installationsweg.
     missing = XService._map_browser_error(RuntimeError("Executable doesn't exist"))
-    assert "python -m playwright install chromium" in missing
+    assert "-m playwright install chromium" in missing
 
 
 def test_closed_window_stops_the_browser_loop(tmp_path: Path):

@@ -45,6 +45,14 @@ Für die Anmeldung gibt es drei Wege:
 
 * **Mit Sitzungs-Token (empfohlen)** – du überträgst eine bereits
   bestehende Anmeldung aus deinem normalen Browser. Siehe unten.
+
+> **Chromium fehlt?** Die Startskripte holen ihn seit Kurzem selbst
+> (einmalig ca. 150 MB). Kommt die Meldung „Playwright-Chromium fehlt“
+> trotzdem, einmal `setup-x-browser.bat` bzw. `./setup-x-browser.sh`
+> ausführen. Tippe **nicht** einfach `python -m playwright install
+> chromium` – das trifft das System-Python, während die App in ihrer
+> eigenen Umgebung unter `.venv` läuft. Die Fehlermeldung nennt daher
+> jetzt den vollständigen Pfad des richtigen Python.
 * **Bei X anmelden** – du gibst E-Mail-Adresse oder Benutzernamen, optional
   deinen `@Benutzernamen` und dein Passwort direkt in der Oberfläche ein. Die
   App trägt beides in das echte X-Formular im sichtbaren Fenster ein.

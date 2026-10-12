@@ -21,5 +21,13 @@ fi
 echo "Abhängigkeiten werden geprüft …"
 .venv/bin/python -m pip install --quiet -r requirements.txt
 
+# Chromium für die X-Videosuche. Playwright installiert nur, was fehlt –
+# ist es schon da, ist der Aufruf in einer Sekunde durch.
+echo "Chromium für die X-Suche wird geprüft …"
+.venv/bin/python -m playwright install chromium || {
+    echo "HINWEIS: Chromium konnte nicht geholt werden. Instagram funktioniert"
+    echo "trotzdem; die X-Videosuche bleibt bis dahin ohne Browser."
+}
+
 echo "Browser-Oberfläche startet …"
 exec .venv/bin/python web.py

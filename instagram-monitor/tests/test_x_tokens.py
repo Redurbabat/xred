@@ -123,3 +123,19 @@ def test_a_tampered_file_cannot_inject_extra_cookie_lines(service: XService):
         encoding="utf-8",
     )
     assert service.has_manual_session() is False
+
+
+def test_the_chromium_hint_points_at_the_running_interpreter():
+    """Die alte Meldung riet zu „python -m playwright install“ – das traf
+
+    unter Windows das System-Python statt der .venv der App, und der
+    Fehler blieb nach dem Befolgen bestehen.
+    """
+    import sys
+
+    from app.x_service import chromium_install_hint
+
+    hinweis = chromium_install_hint()
+    assert sys.executable in hinweis
+    assert "playwright install chromium" in hinweis
+    assert "setup-x-browser" in hinweis
