@@ -25,7 +25,7 @@ import logging
 import re
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -194,8 +194,16 @@ class SocialCache:
                 return True  # noch nie geholt → sofort fällig
             newest = max(newest, fetched)
         try:
-            elapsed = (datetime.now() - datetime.fromisoformat(newest)).total_seconds()
-        except ValueError:
+            # ``social_fetched_at`` wird mit Zeitzone gespeichert (…+00:00).
+            # Ein naives ``datetime.now()`` warf hier einen TypeError, der
+            # nicht abgefangen wurde: Die Fälligkeitsprüfung scheiterte ab
+            # dem ersten gespeicherten Stand bei JEDEM Durchlauf, die Listen
+            # wurden nie wieder von selbst aufgefrischt.
+            stamp = datetime.fromisoformat(newest)
+            if stamp.tzinfo is None:  # Altbestand ohne Zeitzone: als UTC lesen
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            elapsed = (datetime.now(timezone.utc) - stamp).total_seconds()
+        except (ValueError, TypeError):
             return True
         return elapsed >= interval
 

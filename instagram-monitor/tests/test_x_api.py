@@ -227,10 +227,12 @@ def test_password_endpoint_rejects_foreign_origin_and_host(api_env, monkeypatch)
     )
     foreign_origin = _login(client, headers={"Origin": "https://boese.example"})
     assert foreign_origin.status_code == 403
-    # DNS-Rebinding: fremder Name, der auf 127.0.0.1 zeigt.
+    # DNS-Rebinding: fremder Name, der auf 127.0.0.1 zeigt. Seit dem
+    # globalen Herkunftsschutz (_origin_guard) wird das bereits vor der
+    # Route abgewiesen – also ohne das routeneigene Feld „local_only“.
     rebinding = _login(client, headers={"Host": "angriff.example.com"})
     assert rebinding.status_code == 403
-    assert rebinding.get_json()["local_only"] is True
+    assert rebinding.get_json()["error"]
 
 
 def test_password_endpoint_rejects_html_form_posts(api_env, monkeypatch):

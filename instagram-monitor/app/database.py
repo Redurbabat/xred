@@ -125,18 +125,17 @@ CREATE INDEX IF NOT EXISTS idx_x_posts_downloaded ON x_posts (downloaded, discov
 """
 
 
-def _now() -> str:
-    """Aktueller Zeitstempel als ISO-String (sekundengenau, lokale Zeit)."""
-    return datetime.now().isoformat(timespec="seconds")
-
-
 def _now_utc() -> str:
     """Aktueller Zeitstempel in UTC mit Zeitzonen-Angabe (…+00:00).
 
-    Wird für Zeitpunkte verwendet, die die Web-Oberfläche über ``timeAgo``
-    anzeigt (z. B. „Stand: …“). Die Oberfläche interpretiert zeitzonenlose
-    Werte als UTC; ein lokaler Zeitstempel würde dort um den UTC-Versatz
-    (in Deutschland 1–2 Stunden) falsch erscheinen.
+    Der EINZIGE Zeitstempel-Erzeuger dieser Datei – bewusst, damit nicht
+    wieder lokale und UTC-Werte nebeneinander in der Datenbank stehen. Die
+    Oberfläche interpretiert zeitzonenlose Werte als UTC; ein lokaler
+    Zeitstempel erschien dort um den UTC-Versatz (in Deutschland 1–2
+    Stunden) falsch, also „vor 2 Std“ für etwas gerade Geschehenes.
+
+    Altbestand aus früheren Versionen ist zeitzonenlos und bleibt um
+    diesen Versatz verschoben; neu geschriebene Werte stimmen.
     """
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -260,7 +259,7 @@ class Database:
         try:
             self._execute(
                 "INSERT INTO accounts (username, added_at) VALUES (?, ?)",
-                (username, _now()),
+                (username, _now_utc()),
             )
             logger.info("Konto hinzugefügt: @%s", username)
             return True
@@ -306,7 +305,7 @@ class Database:
         """Speichert Zeitpunkt und Ergebnis (Fehlertext oder None) der Prüfung."""
         self._execute(
             "UPDATE accounts SET last_checked = ?, last_error = ? WHERE username = ?",
-            (_now(), error, username),
+            (_now_utc(), error, username),
         )
 
     # ------------------------------------------------------------------
@@ -352,7 +351,7 @@ class Database:
                 username,
                 post_type,
                 posted_at,
-                _now(),
+                _now_utc(),
                 1 if download_pending else 0,
             ),
         )
@@ -365,7 +364,7 @@ class Database:
             SET downloaded = 1, downloaded_at = ?, download_pending = 0
             WHERE shortcode = ? AND username = ?
             """,
-            (_now(), shortcode, username),
+            (_now_utc(), shortcode, username),
         )
 
     def get_pending_downloads(self, username: str) -> list[sqlite3.Row]:
@@ -635,7 +634,7 @@ class Database:
             VALUES (?, ?)
             ON CONFLICT(username) DO UPDATE SET checked_at = excluded.checked_at
             """,
-            (username, _now()),
+            (username, _now_utc()),
         )
 
     def set_favorite(self, username: str, on: bool) -> None:
@@ -688,7 +687,7 @@ class Database:
             INSERT INTO settings (key, value) VALUES (?, ?)
             ON CONFLICT(key) DO UPDATE SET value = excluded.value
             """,
-            (f"complete_{username}", f"{_now()}|{n}"),
+            (f"complete_{username}", f"{_now_utc()}|{n}"),
         )
         self.bump_social_version()
 

@@ -79,7 +79,12 @@ def setup_logging(log_file: Path, event_queue: "queue.Queue | None" = None) -> N
 
     # Fremdbibliotheken (instaloader, urllib3 …) sind auf DEBUG sehr
     # gesprächig – auf WARNING begrenzen, damit das Log lesbar bleibt.
-    for noisy in ("urllib3", "instaloader", "PIL"):
+    #
+    # „werkzeug“ steht aus einem zweiten Grund in der Liste: Sein
+    # Zugriffsprotokoll schreibt die komplette Anfragezeile mit, also auch
+    # „GET /?key=<Zugangscode>“. Der Code für den Handy-Zugriff landete so
+    # im Klartext in logs/web.log und in jeder rotierten Sicherung.
+    for noisy in ("urllib3", "instaloader", "PIL", "werkzeug"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 

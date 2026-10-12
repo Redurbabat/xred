@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import ipaddress
 import json
 import logging
 import os
@@ -127,13 +128,19 @@ def _is_local_origin(value: str) -> bool:
     return (parsed.hostname or "").lower() in _LOCAL_HOSTNAMES
 
 
-def _authority(value: str, *, is_url: bool = False) -> str:
+def _authority(value: str, *, is_url: bool = False, default_port: int = 80) -> str:
     """Normalisiert „host:port“ zum Vergleich von Origin und Host.
 
     Wird für den Herkunftsvergleich gebraucht: Verglichen wird NICHT gegen
     localhost, sondern gegen den Host der Anfrage selbst. Auf dem PC ist das
     127.0.0.1, im Handy-Modus die WLAN-Adresse, über Tailscale die
     100.x-Adresse – die Prüfung stimmt damit in allen Betriebsarten.
+
+    ``default_port`` gilt für einen Host-Header ohne Portangabe. Hinter
+    einem HTTPS-Tunnel (Cloudflare, Reverse Proxy) steht dort nur der Name,
+    während der Origin-Kopf „https://name“ = Port 443 meint. Ohne diesen
+    Parameter verglichen sich 443 und 80 – und jede schreibende Anfrage
+    wäre mit 403 abgewiesen worden.
     """
     raw = (value or "").strip()
     if not raw:
@@ -163,7 +170,13 @@ def _authority(value: str, *, is_url: bool = False) -> str:
         if not port_part.isdigit():
             return ""
         return f"{host}:{int(port_part)}"
-    return f"{host}:80"
+    return f"{host}:{default_port}"
+
+
+def _forwarded_scheme(headers, fallback: str) -> str:
+    """http/https der ursprünglichen Anfrage – auch hinter einem Proxy."""
+    raw = (headers.get("X-Forwarded-Proto", "") or "").split(",")[0].strip().lower()
+    return raw if raw in ("http", "https") else fallback
 
 
 class _FeedJob:
@@ -382,7 +395,11 @@ def create_app(
                                key=lambda x: x.get("posted_at", ""),
                                reverse=True)[:300]
                 payload = {
-                    "saved_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                    # UTC mit Offset: Die Oberfläche zeigt diesen Wert über
+                    # timeAgo an und liest zeitzonenlose Werte als UTC.
+                    "saved_at": datetime.datetime.now(
+                        datetime.timezone.utc
+                    ).isoformat(timespec="seconds"),
                     "items": items,
                 }
                 _feed_store.parent.mkdir(parents=True, exist_ok=True)
@@ -426,6 +443,73 @@ def create_app(
             status=403,
             mimetype="text/html; charset=utf-8",
         )
+
+    # ------------------------------------------------------------------
+    # Herkunftsschutz für ALLE Endpunkte (CSRF + DNS-Rebinding)
+    # ------------------------------------------------------------------
+    # Bisher hatten nur die X-Endpunkte diesen Schutz. Die Instagram-Seite
+    # nahm jede Anfrage an: Jede Webseite, die im Browser offen ist, während
+    # die App läuft, konnte per Hintergrund-Formular den Download-Ordner
+    # umstellen, einen Komplett-Download aller Abos auslösen (= Instagram-
+    # Drosselung) oder abmelden. Die Antwort bleibt für die fremde Seite
+    # unlesbar – die Nebenwirkung trat trotzdem ein.
+    #
+    # Zusätzliche Hostnamen (eigene Domain, Tunnel, Tailscale-Name) lassen
+    # sich über die Umgebungsvariable IGMON_ALLOWED_HOSTS freigeben,
+    # mehrere durch Komma getrennt.
+    _allowed_hosts = frozenset(
+        part.strip().lower()
+        for part in os.environ.get("IGMON_ALLOWED_HOSTS", "").split(",")
+        if part.strip()
+    )
+
+    def _host_is_trusted(value: str) -> bool:
+        """Nur localhost, reine IP-Adressen und freigegebene Namen.
+
+        Gegen DNS-Rebinding: Eine fremde Seite kann ihren eigenen Namen auf
+        127.0.0.1 zeigen lassen und wäre dann „same-origin“ – sie dürfte die
+        Antworten also auch LESEN. Ein Name, der nicht freigegeben ist,
+        fliegt deshalb hier raus; IP-Adressen sind davon nicht betroffen,
+        weil sie sich nicht umbiegen lassen.
+        """
+        host = _header_hostname(value)
+        if not host:
+            return False
+        if host in _LOCAL_HOSTNAMES or host in _allowed_hosts:
+            return True
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            return False
+        return True
+
+    @app.before_request
+    def _origin_guard():
+        host = request.headers.get("Host", "")
+        if host and not _host_is_trusted(host):
+            return jsonify(
+                error="Unerwartete Adresse. Bitte die IP-Adresse verwenden, die "
+                      "im PC-Fenster steht. Eigene Namen (Domain/Tunnel) müssen "
+                      "in IGMON_ALLOWED_HOSTS freigegeben werden.",
+            ), 403
+        # Lesende Anfragen ändern nichts. Wichtig auch für GET /save: Das
+        # Lesezeichen und das Teilen-Ziel rufen es absichtlich von
+        # instagram.com aus auf, also fremdstämmig.
+        if request.method in ("GET", "HEAD", "OPTIONS"):
+            return None
+        fetch_site = request.headers.get("Sec-Fetch-Site", "")
+        if fetch_site and fetch_site not in ("same-origin", "none"):
+            return jsonify(error="Anfrage von einer fremden Seite abgelehnt."), 403
+        source = request.headers.get("Origin", "") or request.headers.get("Referer", "")
+        if not source:
+            # Ein Browser kann einen fremdstämmigen POST nicht ohne Origin
+            # erzeugen. Werkzeuge wie curl dürfen weiterhin lokal arbeiten.
+            return None
+        scheme = _forwarded_scheme(request.headers, request.scheme)
+        expected = _authority(host, default_port=443 if scheme == "https" else 80)
+        if not expected or _authority(source, is_url=True) != expected:
+            return jsonify(error="Anfrage von einer fremden Seite abgelehnt."), 403
+        return None
 
     def remember(posts: list[PostInfo]) -> None:
         with cache_lock:
@@ -608,7 +692,11 @@ def create_app(
             # Ein Browser kann einen Cross-Site-POST nicht ohne Origin
             # erzeugen. Werkzeuge wie curl dürfen weiterhin lokal arbeiten.
             return None
-        expected = _authority(request.headers.get("Host", ""))
+        scheme = _forwarded_scheme(request.headers, request.scheme)
+        expected = _authority(
+            request.headers.get("Host", ""),
+            default_port=443 if scheme == "https" else 80,
+        )
         if not expected or _authority(source, is_url=True) != expected:
             return jsonify(error="Anfrage von einer fremden Seite abgelehnt."), 403
         return None
@@ -847,7 +935,7 @@ def create_app(
 
     @app.post("/api/login")
     def login():
-        data = request.get_json(force=True, silent=True) or {}
+        data = request.get_json(silent=True) or {}
         username = (data.get("username") or "").strip().lstrip("@")
         password = data.get("password") or ""
         code = (data.get("code") or "").strip()
@@ -866,7 +954,7 @@ def create_app(
 
     @app.post("/api/import-session")
     def import_session():
-        data = request.get_json(force=True, silent=True) or {}
+        data = request.get_json(silent=True) or {}
         browser = (data.get("browser") or "").strip() or None
         try:
             user = downloader.import_browser_session(browser)
@@ -876,7 +964,7 @@ def create_app(
 
     @app.post("/api/login-sessionid")
     def login_sessionid():
-        data = request.get_json(force=True, silent=True) or {}
+        data = request.get_json(silent=True) or {}
         sessionid = data.get("sessionid") or ""
         try:
             user = downloader.login_with_sessionid(sessionid)
@@ -1019,7 +1107,7 @@ def create_app(
     @app.post("/api/seen")
     def mark_seen():
         """Gesehen-Marke setzen: Die NEU-Markierung dieses Kontos erlischt."""
-        data = request.get_json(force=True, silent=True) or {}
+        data = request.get_json(silent=True) or {}
         username = extract_username(str(data.get("username", "")))
         if not username:
             return jsonify(error="Ungültiger Benutzername."), 400
@@ -1029,7 +1117,7 @@ def create_app(
     @app.post("/api/favorite")
     def set_favorite():
         """⭐ Konto anpinnen/lösen (steht dann in den Listen ganz oben)."""
-        data = request.get_json(force=True, silent=True) or {}
+        data = request.get_json(silent=True) or {}
         username = extract_username(str(data.get("username", "")))
         if not username:
             return jsonify(error="Ungültiger Benutzername."), 400
@@ -1039,7 +1127,7 @@ def create_app(
     @app.post("/api/group")
     def set_group():
         """Freie Gruppe/Etikett für ein Konto setzen ("" entfernt sie)."""
-        data = request.get_json(force=True, silent=True) or {}
+        data = request.get_json(silent=True) or {}
         username = extract_username(str(data.get("username", "")))
         if not username:
             return jsonify(error="Ungültiger Benutzername."), 400
@@ -1199,7 +1287,7 @@ def create_app(
         """Ein Konto zur lokalen „Gefolgt"-Liste hinzufügen (z. B. aus der
         Suche). Kein echter Instagram-Follow – nur die App-eigene Liste, damit
         das Konto im Feed erscheint und ladbar ist."""
-        data = request.get_json(force=True, silent=True) or {}
+        data = request.get_json(silent=True) or {}
         username = extract_username(str(data.get("username", "")))
         if not username:
             return jsonify(error="Ungültiger Benutzername."), 400
@@ -1213,7 +1301,7 @@ def create_app(
     @app.post("/api/following/remove")
     def following_remove():
         """Ein Konto aus der lokalen „Gefolgt"-Liste entfernen."""
-        data = request.get_json(force=True, silent=True) or {}
+        data = request.get_json(silent=True) or {}
         username = extract_username(str(data.get("username", "")))
         if not username:
             return jsonify(error="Ungültiger Benutzername."), 400
@@ -1247,7 +1335,11 @@ def create_app(
         if types == "photos":
             return post_type in ("Bild", "Album")
         if types == "videos":
-            return post_type in ("Video", "Reel")
+            # „Video/Reel“ ist der Wert, den _classify_post für ein normales
+            # Video vergibt (siehe downloader.py); „Video“ allein kommt dort
+            # nie vor. Ohne diesen Eintrag ließ „nur Videos“ fast alle Videos
+            # aus und lud nur Reels.
+            return post_type in ("Video", "Video/Reel", "Reel")
         return True
 
     # ------------------------------------------------------------------
@@ -1413,7 +1505,7 @@ def create_app(
     def download_following():
         if bulk.snapshot()["running"]:
             return jsonify(error="Es läuft bereits ein Massen-Download."), 409
-        data = request.get_json(force=True, silent=True) or {}
+        data = request.get_json(silent=True) or {}
         try:
             per_account = max(1, min(_MAX_COUNT, int(data.get("count", 3))))
         except (TypeError, ValueError):
@@ -1460,7 +1552,7 @@ def create_app(
     @app.post("/api/accounts-complete/reset")
     def accounts_complete_reset():
         """Erledigt-Vermerk entfernen – das Konto wird dann erneut geladen."""
-        data = request.get_json(force=True, silent=True) or {}
+        data = request.get_json(silent=True) or {}
         username = extract_username(str(data.get("username", "")))
         if not username:
             return jsonify(error="Ungültiger Benutzername."), 400
@@ -1474,7 +1566,7 @@ def create_app(
         nicht ``include_done`` gesetzt ist."""
         if bulk.snapshot()["running"]:
             return jsonify(error="Es läuft bereits ein Massen-Download."), 409
-        data = request.get_json(force=True, silent=True) or {}
+        data = request.get_json(silent=True) or {}
         selected = data.get("usernames")
         if isinstance(selected, list) and selected:
             usernames = [str(u).strip().lstrip("@").lower()
@@ -1506,7 +1598,7 @@ def create_app(
     def download_stories():
         if bulk.snapshot()["running"]:
             return jsonify(error="Es läuft bereits ein Download."), 409
-        data = request.get_json(force=True, silent=True) or {}
+        data = request.get_json(silent=True) or {}
         username = extract_username(data.get("username", ""))
         kind = data.get("kind", "stories")
         if kind not in ("stories", "highlights"):
@@ -1613,7 +1705,7 @@ def create_app(
                                  "sehen."), 401
         if feed.snapshot(include_items=False)["running"]:
             return jsonify(error="Der Feed wird bereits geladen."), 409
-        data = request.get_json(force=True, silent=True) or {}
+        data = request.get_json(silent=True) or {}
         try:
             profiles = max(0, int(data.get("profiles", settings.feed_profiles)))
         except (TypeError, ValueError):
@@ -1933,7 +2025,7 @@ def create_app(
     # ------------------------------------------------------------------
     @app.post("/api/download")
     def download():
-        data = request.get_json(force=True, silent=True) or {}
+        data = request.get_json(silent=True) or {}
         shortcode = (data.get("shortcode") or "").strip()
         # Konto optional mitliefern: So funktioniert der Download auch nach
         # einem Neustart (leerer Cache), wenn die Oberfläche den Beitrag noch
@@ -2266,7 +2358,7 @@ def create_app(
         Downloads und Prüfungen bereits gesehen haben) – kein
         Instagram-Abruf, daher sofort da.
         """
-        data = request.get_json(force=True, silent=True) or {}
+        data = request.get_json(silent=True) or {}
         usernames = [str(u).strip().lstrip("@")
                      for u in (data.get("usernames") or []) if str(u).strip()]
         items = {u: (db.newest_posted_at(u) or "") for u in usernames[:2000]}
@@ -2326,7 +2418,7 @@ def create_app(
     def check_new_start():
         if not downloader.is_logged_in:
             return jsonify(error="Bitte zuerst anmelden."), 401
-        data = request.get_json(force=True, silent=True) or {}
+        data = request.get_json(silent=True) or {}
         usernames = [str(u).strip().lstrip("@")
                      for u in (data.get("usernames") or []) if str(u).strip()]
         usernames = usernames[:500]
@@ -2364,7 +2456,7 @@ def create_app(
 
     @app.post("/api/settings")
     def set_settings():
-        data = request.get_json(force=True, silent=True) or {}
+        data = request.get_json(silent=True) or {}
         if "save_captions" in data:
             settings.save_captions = bool(data["save_captions"])
         if "social_auto_refresh" in data:
@@ -2412,7 +2504,7 @@ def create_app(
 
     @app.post("/api/schedule")
     def set_schedule():
-        data = request.get_json(force=True, silent=True) or {}
+        data = request.get_json(silent=True) or {}
         settings.schedule_enabled = bool(data.get("enabled"))
         settings.schedule_stories = bool(data.get("stories"))
         if "times" in data and isinstance(data["times"], list):
