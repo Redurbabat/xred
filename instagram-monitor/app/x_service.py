@@ -334,6 +334,30 @@ def chromium_install_hint() -> str:
     )
 
 
+def describe_launch_failure(exc: BaseException) -> str:
+    """Erklärt, warum Chromium nicht startet – ohne den Grund zu verschlucken.
+
+    Bisher wurde jede Meldung, in der „executable“ ODER „browser“ vorkam,
+    durch „Chromium fehlt“ ersetzt. Da fast jede Playwright-Meldung das Wort
+    „browser“ enthält, verdeckte dieser Pauschaltext auch ganz andere
+    Ursachen – etwa eine von Windows blockierte Datei. Der Originaltext
+    wird deshalb immer mitgegeben.
+    """
+    message = public_error(exc)
+    lower = message.lower()
+    if "0xc0e90002" in lower or "integrity" in lower or "virus" in lower:
+        kopf = (
+            "Windows hat Chromium blockiert (Code-Integrität). Das ist meist "
+            "Smart App Control oder ein Virenscanner – die Chromium-Ausgabe "
+            "von Playwright ist nicht signiert."
+        )
+    elif "doesn't exist" in lower or "executable" in lower or "install" in lower:
+        kopf = "Playwright-Chromium fehlt oder startet nicht. " + chromium_install_hint()
+    else:
+        kopf = "Chromium konnte nicht gestartet werden."
+    return f"{kopf} Originalmeldung: {message}"
+
+
 def validate_x_token(value: Any, field: str) -> str:
     """Prüft einen X-Sitzungs-Cookie (``auth_token`` bzw. ``ct0``).
 
@@ -1149,13 +1173,7 @@ class XService:
                         args=list(_NO_PASSWORD_MANAGER_ARGS),
                     )
                 except Exception as exc:
-                    message = public_error(exc)
-                    if "executable" in message.lower() or "browser" in message.lower():
-                        message = (
-                            "Playwright-Chromium fehlt oder startet nicht. "
-                            + chromium_install_hint()
-                        )
-                    raise XUnavailableError(message) from exc
+                    raise XUnavailableError(describe_launch_failure(exc)) from exc
                 context.set_default_timeout(10_000)
                 # Per Token hinterlegte Sitzung ins Fenster übernehmen, damit
                 # keine Anmeldemaske erscheint.

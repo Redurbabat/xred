@@ -205,3 +205,44 @@ def test_without_a_manual_session_nothing_is_written(service: XService):
     service._refresh_manual_session(_browser_cookies(AUTH, CT0))
     assert not (service.session_dir / "manual_session.json").exists()
     assert service.has_manual_session() is False
+
+
+# --- Startfehler sollen ihren Grund nennen, nicht verdecken ----------------
+
+
+def test_a_missing_chromium_is_named_as_such():
+    from app.x_service import describe_launch_failure
+
+    text = describe_launch_failure(RuntimeError(
+        "BrowserType.launch: Executable doesn't exist at C:\\...\\chrome.exe"
+    ))
+    assert "fehlt oder startet nicht" in text
+    assert "playwright install chromium" in text
+
+
+def test_a_blocked_binary_is_not_mistaken_for_a_missing_one():
+    """Windows-Sperre (Smart App Control) hat eine eigene Erklärung."""
+    from app.x_service import describe_launch_failure
+
+    text = describe_launch_failure(RuntimeError(
+        "Failed to launch: status 0xc0e90002"
+    ))
+    assert "blockiert" in text
+    assert "Smart App Control" in text
+    assert "playwright install" not in text
+
+
+def test_an_unknown_reason_is_passed_through():
+    """Früher verdeckte „Chromium fehlt“ jede Meldung mit dem Wort browser."""
+    from app.x_service import describe_launch_failure
+
+    text = describe_launch_failure(RuntimeError("browser process crashed: no space left"))
+    assert "no space left" in text
+    assert "fehlt" not in text
+
+
+def test_the_original_message_is_always_included():
+    from app.x_service import describe_launch_failure
+
+    for roh in ("Executable doesn't exist", "status 0xc0e90002", "irgendwas anderes"):
+        assert roh in describe_launch_failure(RuntimeError(roh))
