@@ -159,6 +159,12 @@ der Zusammenhang erhalten bleibt. Dateien aus früheren Versionen liegen
 flach unter `<Quelle>/Videos/`; sie werden weiterhin erkannt und **nicht**
 erneut heruntergeladen.
 
+**FFmpeg** wird gebraucht, um die von X getrennt ausgelieferten besten
+Bild- und Tonspuren zu verbinden. Es muss **nicht** mehr von Hand
+installiert werden: Das Paket `imageio-ffmpeg` bringt eine eigene
+Programmdatei mit (kein Administratorrecht, kein PATH-Gebastel). Ein
+bereits im System vorhandenes FFmpeg hat weiterhin Vorrang.
+
 `yt-dlp` lädt die beste verfügbare Videoqualität mit Audio. Ist FFmpeg
 vorhanden, können getrennte beste Video-/Audiospuren zusammengeführt werden;
 ohne FFmpeg versucht die App eine einzelne MP4-Variante. Ein Fehler bei einem

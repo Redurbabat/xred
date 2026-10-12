@@ -37,6 +37,14 @@ yt-dlp>=2025.1.15,<2027
 # instaloader ohnehin mitinstalliert).
 requests>=2.31,<3
 
+# Bringt eine eigene FFmpeg-Programmdatei mit. FFmpeg verbindet die von X
+# getrennt ausgelieferten besten Bild- und Tonspuren; ohne FFmpeg bleibt
+# nur eine fertige MP4-Variante – oft geringere Qualität, bei manchen
+# Beiträgen gar kein Ton. Unter Windows ist FFmpeg selten installiert, und
+# eine Anleitung („bitte FFmpeg installieren“) hilft da wenig. Ein bereits
+# im PATH vorhandenes FFmpeg hat weiterhin Vorrang.
+imageio-ffmpeg>=0.5,<1
+
 # Übernahme der bestehenden Instagram-Anmeldung aus dem Browser
 # ("Aus Browser übernehmen"). Vermeidet den Instagram-Sicherheits-
 # Checkpoint, weil KEINE neue Anmeldung erfolgt, sondern die im Browser

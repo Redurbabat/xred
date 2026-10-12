@@ -674,7 +674,8 @@ def test_missing_ffmpeg_is_only_an_optional_warning(tmp_path: Path, monkeypatch)
     db = Database(tmp_path / "d.db")
     settings = Settings(db, default_download_dir=str(tmp_path / "downloads"))
     service = XService(db, settings, tmp_path / "session")
-    monkeypatch.setattr("app.x_service.shutil.which", lambda name: None)
+    # Weder im PATH noch als mitgeliefertes Paket vorhanden.
+    monkeypatch.setattr("app.x_service.ffmpeg_path", lambda: "")
     state = service.status()
     assert state["available"] is True
     assert state["ffmpeg"] is False

@@ -246,3 +246,55 @@ def test_the_original_message_is_always_included():
 
     for roh in ("Executable doesn't exist", "status 0xc0e90002", "irgendwas anderes"):
         assert roh in describe_launch_failure(RuntimeError(roh))
+
+
+# --- FFmpeg: lieber mitbringen als anleiten --------------------------------
+
+
+def test_ffmpeg_from_the_path_wins(monkeypatch):
+    from app import x_service
+
+    monkeypatch.setattr(x_service.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    assert x_service.ffmpeg_path() == "/usr/bin/ffmpeg"
+
+
+def test_the_bundled_ffmpeg_is_used_when_the_system_has_none(monkeypatch, tmp_path: Path):
+    """Der eigentliche Gewinn: kein „bitte FFmpeg installieren“ mehr."""
+    from app import x_service
+
+    mitgeliefert = tmp_path / "ffmpeg.exe"
+    mitgeliefert.write_bytes(b"")
+    monkeypatch.setattr(x_service.shutil, "which", lambda name: None)
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "imageio_ffmpeg",
+        type("M", (), {"get_ffmpeg_exe": staticmethod(lambda: str(mitgeliefert))}),
+    )
+    assert x_service.ffmpeg_path() == str(mitgeliefert)
+
+
+def test_without_any_ffmpeg_the_result_is_empty(monkeypatch):
+    from app import x_service
+
+    monkeypatch.setattr(x_service.shutil, "which", lambda name: None)
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "imageio_ffmpeg",
+        type("M", (), {"get_ffmpeg_exe": staticmethod(lambda: "/gibt/es/nicht")}),
+    )
+    assert x_service.ffmpeg_path() == ""
+
+
+def test_a_broken_bundled_ffmpeg_does_not_crash(monkeypatch):
+    from app import x_service
+
+    def kaputt():
+        raise RuntimeError("Download der Programmdatei fehlgeschlagen")
+
+    monkeypatch.setattr(x_service.shutil, "which", lambda name: None)
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "imageio_ffmpeg",
+        type("M", (), {"get_ffmpeg_exe": staticmethod(kaputt)}),
+    )
+    assert x_service.ffmpeg_path() == ""

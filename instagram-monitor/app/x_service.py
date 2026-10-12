@@ -338,6 +338,32 @@ def chromium_install_hint() -> str:
     )
 
 
+def ffmpeg_path() -> str:
+    """Pfad zu FFmpeg – aus dem System oder aus dem Python-Paket.
+
+    FFmpeg verbindet die getrennt ausgelieferten besten Bild- und
+    Tonspuren. Ohne FFmpeg bleibt nur eine fertige MP4-Variante, also
+    oft geringere Qualität und bei manchen Beiträgen gar kein Ton.
+    Unter Windows ist FFmpeg selten installiert, und eine Anleitung
+    ("bitte FFmpeg installieren") hilft wenig. Deshalb wird zusätzlich
+    das Paket ``imageio-ffmpeg`` genutzt, das eine eigene Programmdatei
+    mitbringt – ohne Administratorrechte und ohne PATH-Gebastel.
+    """
+    gefunden = shutil.which("ffmpeg")
+    if gefunden:
+        return gefunden
+    try:
+        import imageio_ffmpeg
+    except ImportError:
+        return ""
+    try:
+        pfad = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        logger.debug("Mitgeliefertes FFmpeg nicht nutzbar.", exc_info=True)
+        return ""
+    return pfad if pfad and Path(pfad).exists() else ""
+
+
 def describe_launch_failure(exc: BaseException) -> str:
     """Erklärt, warum Chromium nicht startet – ohne den Grund zu verschlucken.
 
@@ -663,7 +689,7 @@ class XService:
             "manual_session": self.has_manual_session(),
             "dependencies": deps,
             "warning": warning,
-            "ffmpeg": shutil.which("ffmpeg") is not None,
+            "ffmpeg": bool(ffmpeg_path()),
             "search": self.search_job.snapshot(),
             "download": self.download_job.snapshot(),
             "recent_downloads": recent_downloads,
@@ -1773,7 +1799,7 @@ class XService:
         if partial_dir.exists():
             shutil.rmtree(partial_dir)
         partial_dir.mkdir(parents=True)
-        ffmpeg = shutil.which("ffmpeg")
+        ffmpeg = ffmpeg_path()
 
         def progress_hook(data: dict[str, Any]) -> None:
             if self.download_job.cancel_event.is_set():
@@ -1797,6 +1823,9 @@ class XService:
         }
         if ffmpeg:
             options["merge_output_format"] = "mp4"
+            # Liegt FFmpeg nicht im PATH, sondern im Python-Paket, muss
+            # yt-dlp den Pfad ausdruecklich bekommen.
+            options["ffmpeg_location"] = ffmpeg
         if cookie_file is not None:
             options["cookiefile"] = str(cookie_file)
         factory = self._ytdlp_factory or self._default_ytdlp_factory
