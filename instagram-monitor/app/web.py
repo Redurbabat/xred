@@ -833,6 +833,43 @@ def create_app(
             data.clear()
         return jsonify(result)
 
+    @app.post("/api/x/tokens")
+    def x_login_tokens():
+        """Bestehende X-Sitzung aus auth_token + ct0 übernehmen.
+
+        Wie beim Passwort nur vom PC selbst: Die beiden Cookies sind der
+        volle Zugang zum Konto. Gespeichert werden sie im Profilordner,
+        zurückgegeben werden sie nie.
+        """
+        if x_service is None:
+            return _x_unavailable()
+        denied = _local_only_credentials()
+        if denied is not None:
+            return denied
+        from .x_service import XValidationError
+
+        data = request.get_json(silent=True, cache=False)
+        if not isinstance(data, dict):
+            return jsonify(error="Ungültige Eingabe."), 400
+        try:
+            result = x_service.login_with_tokens(data.get("auth_token"), data.get("ct0"))
+        except (XValidationError, TypeError, ValueError) as exc:
+            return _x_error(exc, 400)
+        except Exception as exc:
+            return _x_error(exc, 503)
+        finally:
+            data.clear()
+        return jsonify(result)
+
+    @app.post("/api/x/tokens/forget")
+    def x_forget_tokens():
+        if x_service is None:
+            return _x_unavailable()
+        denied = _local_only_credentials()
+        if denied is not None:
+            return denied
+        return jsonify(ok=True, removed=x_service.forget_tokens())
+
     @app.post("/api/x/search")
     def x_search_start():
         if x_service is None:

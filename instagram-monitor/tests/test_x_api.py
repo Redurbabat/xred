@@ -421,3 +421,73 @@ def test_a_json_array_is_a_bad_request_not_a_server_error(api_env, route):
     assert response.status_code == 400
     body = response.get_data(as_text=True)
     assert "object has no attribute" not in body
+
+
+# ----------------------------------------------------------------------
+# Anmeldung per Sitzungs-Token: genauso geschützt wie das Passwort.
+# ----------------------------------------------------------------------
+
+TEST_AUTH_TOKEN = "a" * 40
+TEST_CT0 = "b" * 64
+
+
+def _tokens(client, *, token=None, environ=None, headers=None, payload=None):
+    body = {"auth_token": TEST_AUTH_TOKEN, "ct0": TEST_CT0}
+    if payload is not None:
+        body = payload
+    sent = {"X-CSRF-Token": token if token is not None else _token(client)}
+    sent.update(headers or {})
+    return client.post(
+        "/api/x/tokens", json=body, headers=sent, environ_base=environ or {}
+    )
+
+
+def test_tokens_are_accepted_from_the_pc_and_never_echoed(api_env):
+    client, _db, service = api_env
+    response = _tokens(client)
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert TEST_AUTH_TOKEN not in body and TEST_CT0 not in body
+    assert service.has_manual_session() is True
+    assert client.get("/api/x/status").get_json()["manual_session"] is True
+
+
+def test_a_network_device_cannot_hand_over_tokens(api_env):
+    client, _db, service = api_env
+    response = _tokens(client, token="egal", environ=LAN)
+    assert response.status_code == 403
+    assert service.has_manual_session() is False
+
+
+def test_tokens_need_the_csrf_token(api_env):
+    client, _db, service = api_env
+    assert _tokens(client, token="").status_code == 403
+    assert _tokens(client, token="falsch").status_code == 403
+    assert service.has_manual_session() is False
+
+
+def test_a_foreign_page_cannot_hand_over_tokens(api_env):
+    client, _db, service = api_env
+    assert _tokens(client, headers={"Origin": "https://boese.example"}).status_code == 403
+    assert service.has_manual_session() is False
+
+
+def test_junk_tokens_are_rejected_with_a_clear_message(api_env):
+    client, _db, service = api_env
+    response = _tokens(client, payload={"auth_token": "kein-hex", "ct0": TEST_CT0})
+    assert response.status_code == 400
+    assert "auth_token" in response.get_json()["error"]
+    assert service.has_manual_session() is False
+
+
+def test_the_stored_session_can_be_removed_again(api_env):
+    client, _db, service = api_env
+    assert _tokens(client).status_code == 200
+    # Genau wie die Oberfläche: JSON-Kopfzeile, aber kein Inhalt nötig.
+    removed = client.post(
+        "/api/x/tokens/forget",
+        headers={"X-CSRF-Token": _token(client), "Content-Type": "application/json"},
+    )
+    assert removed.status_code == 200
+    assert removed.get_json()["removed"] is True
+    assert service.has_manual_session() is False

@@ -258,6 +258,10 @@
   .x-login-form input{width:100%}
   .x-login-actions{grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap}
   .x-login-note{border:1px solid var(--border);border-radius:10px;padding:9px 11px}
+  .x-token-box{border:1px solid var(--border);border-radius:10px;padding:9px 11px}
+  .x-token-box > summary{cursor:pointer;font-weight:600}
+  .x-token-box > .hint{margin:8px 0 10px;line-height:1.5}
+  .x-token-box code{font-size:12px}
   .x-search-box{display:grid;grid-template-columns:minmax(190px,1fr) 90px 115px;gap:12px;
         align-items:end}
   .x-search-box label:not(.x-check){display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--muted)}

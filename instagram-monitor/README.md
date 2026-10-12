@@ -41,13 +41,43 @@ Der Navigationspunkt **𝕏 / X Videos** arbeitet ohne Bearer Token und ohne
 kostenpflichtigen Entwicklerzugang. Beim Öffnen der Seite wird noch keine
 X-Anfrage ausgelöst.
 
-Für die Anmeldung gibt es zwei Wege, beide führen in ein sichtbares
-Chromium-Fenster auf diesem PC:
+Für die Anmeldung gibt es drei Wege:
 
+* **Mit Sitzungs-Token (empfohlen)** – du überträgst eine bereits
+  bestehende Anmeldung aus deinem normalen Browser. Siehe unten.
 * **Bei X anmelden** – du gibst E-Mail-Adresse oder Benutzernamen, optional
   deinen `@Benutzernamen` und dein Passwort direkt in der Oberfläche ein. Die
   App trägt beides in das echte X-Formular im sichtbaren Fenster ein.
 * **X-Browser öffnen** – öffnet nur das Fenster, du tippst dort selbst.
+
+#### Mit Sitzungs-Token anmelden
+
+Unter „Bei X anmelden“ klappt der Punkt **„Stattdessen mit Sitzungs-Token
+anmelden“** zwei Felder auf. Drei Gründe, warum das der bessere Weg ist:
+
+1. Dein **Passwort bleibt komplett aussen vor** – es erreicht die App nie.
+2. **X sieht keine neue Anmeldung**, sondern eine weiterlaufende Sitzung.
+   Also keine 2FA-Abfrage, kein CAPTCHA, keine Sicherheitswarnung.
+3. **Downloads brauchen danach kein Browserfenster mehr.** Nur die Suche
+   öffnet noch Chromium, weil sie die Beitragskarten von der Seite liest.
+
+So kommst du an die Werte:
+
+1. Bei **x.com** im normalen Browser anmelden.
+2. **F12** drücken → Reiter **Anwendung** (Chrome/Edge) bzw. **Speicher**
+   (Firefox) → links **Cookies** → **https://x.com**.
+3. Die Zeilen **`auth_token`** und **`ct0`** heraussuchen, jeweils den Wert
+   kopieren und in der App eintragen → **Sitzung übernehmen**.
+
+Behandle die beiden Werte **wie dein Passwort**: Wer sie hat, ist in deinem
+Konto. Sie liegen nur lokal unter `data/x_session/manual_session.json`
+(Dateirechte 0600), werden nie über eine API zurückgegeben und stehen in
+keinem Log. Mit **„Gespeicherte Sitzung löschen“** sind sie wieder weg;
+meldest du dich bei X überall ab, verlieren sie ebenfalls ihre Gültigkeit.
+
+Wie die Passworteingabe nimmt die App auch diese Felder **nur vom PC
+selbst** an – vom Handy aus kommt HTTP 403. Suchen und Herunterladen
+funktionieren von dort weiterhin.
 
 Wie die Zugangsdaten behandelt werden:
 

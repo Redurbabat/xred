@@ -49,6 +49,12 @@ _SECRET_RE = re.compile(
 _VIDEO_SUFFIXES = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}
 _PREVIEW_HOSTS = {"pbs.twimg.com", "video.twimg.com", "abs.twimg.com"}
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
+# Sitzungs-Cookies von X: auth_token ist 40 Hex-Zeichen, ct0 je nach
+# Zeitpunkt 32 bis 160. Grosszuegig gefasst, aber ohne Sonderzeichen.
+_TOKEN_MIN, _TOKEN_MAX = 16, 200
+_TOKEN_RE = re.compile(rf"^[0-9a-fA-F]{{{_TOKEN_MIN},{_TOKEN_MAX}}}$")
+# Von Hand hinterlegte Sitzung (Token-Anmeldung) im Profilordner.
+_MANUAL_COOKIE_FILE = "manual_session.json"
 _LOGIN_URL = "https://x.com/i/flow/login"
 _HOME_URL = "https://x.com/home"
 _BOOKMARKS_URL = "https://x.com/i/bookmarks"
@@ -309,6 +315,24 @@ def validate_sort(value: Any) -> str:
     if sort not in {"latest", "top"}:
         raise XValidationError("Sortierung muss „Neueste“ oder „Top“ sein.")
     return sort
+
+
+def validate_x_token(value: Any, field: str) -> str:
+    """Prüft einen X-Sitzungs-Cookie (``auth_token`` bzw. ``ct0``).
+
+    Beide sind reine Hex-Zeichenketten. Bewusst streng: Der Wert landet in
+    einer Cookie-Datei, in der ein Zeilenumbruch oder Tabulator weitere
+    Einträge unterschieben könnte.
+    """
+    token = str(value or "").strip().strip('"').strip()
+    if not token:
+        raise XValidationError(f"Bitte {field} eintragen.")
+    if not _TOKEN_RE.fullmatch(token):
+        raise XValidationError(
+            f"{field} sieht nicht wie ein X-Cookie aus: erwartet werden "
+            f"{_TOKEN_MIN}–{_TOKEN_MAX} Zeichen aus 0-9 und a-f."
+        )
+    return token.lower()
 
 
 def validate_source(value: Any) -> str:
@@ -587,6 +611,7 @@ class XService:
             "available": True,
             "browser_open": self._browser_open,
             "session_confirmed": self._session_confirmed,
+            "manual_session": self.has_manual_session(),
             "dependencies": deps,
             "warning": warning,
             "ffmpeg": shutil.which("ffmpeg") is not None,
@@ -598,6 +623,72 @@ class XService:
     def open_login(self) -> dict[str, Any]:
         result = self._browser_call("open_login", timeout=75)
         return {"ok": True, "browser_open": True, "url": result.get("url", "https://x.com/")}
+
+    # ------------------------------------------------------------------
+    # Anmeldung per Sitzungs-Token (auth_token + ct0)
+    # ------------------------------------------------------------------
+    def _manual_cookie_path(self) -> Path:
+        return self.session_dir / _MANUAL_COOKIE_FILE
+
+    def login_with_tokens(self, auth_token: Any, ct0: Any) -> dict[str, Any]:
+        """Übernimmt eine bestehende X-Sitzung aus zwei Cookies.
+
+        Vorteil gegenüber dem Passwort: Es findet keine Anmeldung statt, die
+        X als ungewöhnlich bewerten könnte – für X geht die vorhandene
+        Sitzung einfach weiter. Ausserdem laufen Downloads damit ganz ohne
+        Browser, weil yt-dlp die Cookies direkt aus dieser Datei bekommt.
+        """
+        token = validate_x_token(auth_token, "auth_token")
+        csrf = validate_x_token(ct0, "ct0")
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+        path = self._manual_cookie_path()
+        path.write_text(
+            json.dumps({"auth_token": token, "ct0": csrf}),
+            encoding="utf-8",
+        )
+        try:
+            path.chmod(0o600)
+        except OSError:  # Windows kennt den Modus nicht
+            logger.debug("Dateirechte der Sitzungsdatei nicht setzbar.", exc_info=True)
+        self._session_confirmed = True
+        # Läuft bereits ein Fenster, bekommt es die Cookies sofort; sonst
+        # werden sie beim nächsten Start übernommen.
+        if self._browser_open:
+            try:
+                self._browser_call("set_cookies", {"cookies": self._manual_cookies()}, timeout=20)
+            except Exception:
+                logger.debug("Cookies konnten nicht sofort gesetzt werden.", exc_info=True)
+        return {"ok": True, "state": "signed_in",
+                "message": "X-Sitzung übernommen. Suche und Download können starten."}
+
+    def forget_tokens(self) -> bool:
+        """Entfernt die hinterlegte Token-Sitzung (ohne das Browserprofil)."""
+        path = self._manual_cookie_path()
+        existed = path.exists()
+        path.unlink(missing_ok=True)
+        # Die Arbeitskopie für yt-dlp mit entfernen, falls ein Download sie
+        # gerade liegen gelassen hat.
+        (self.session_dir / ".yt-dlp-cookies.txt").unlink(missing_ok=True)
+        return existed
+
+    def _manual_cookies(self) -> list[dict[str, Any]]:
+        """Die hinterlegte Sitzung als Playwright-Cookieliste (leer = keine)."""
+        try:
+            raw = json.loads(self._manual_cookie_path().read_text(encoding="utf-8"))
+            token = validate_x_token(raw.get("auth_token"), "auth_token")
+            csrf = validate_x_token(raw.get("ct0"), "ct0")
+        except (OSError, ValueError, XValidationError):
+            return []
+        return [
+            {
+                "name": name, "value": value, "domain": ".x.com", "path": "/",
+                "secure": True, "httpOnly": name == "auth_token", "sameSite": "None",
+            }
+            for name, value in (("auth_token", token), ("ct0", csrf))
+        ]
+
+    def has_manual_session(self) -> bool:
+        return bool(self._manual_cookies())
 
     def login(self, identifier: Any, password: Any, username: Any = "") -> dict[str, Any]:
         """Fill X's own login form in the visible browser window.
@@ -998,6 +1089,14 @@ class XService:
                         )
                     raise XUnavailableError(message) from exc
                 context.set_default_timeout(10_000)
+                # Per Token hinterlegte Sitzung ins Fenster übernehmen, damit
+                # keine Anmeldemaske erscheint.
+                manual = self._manual_cookies()
+                if manual:
+                    try:
+                        context.add_cookies(manual)
+                    except Exception:
+                        logger.debug("Token-Sitzung nicht übernehmbar.", exc_info=True)
                 page = context.pages[0] if context.pages else context.new_page()
                 # Schließt der Nutzer das Fenster, wacht die Schleife auf und
                 # beendet sich, statt weiter „Browser geöffnet“ zu melden.
@@ -1061,6 +1160,9 @@ class XService:
                     command.result = self._login_on_page(page, **command.payload)
                 elif command.name == "search":
                     command.result = self._search_visible_page(page, **command.payload)
+                elif command.name == "set_cookies":
+                    context.add_cookies(command.payload.get("cookies") or [])
+                    command.result = {"ok": True}
                 elif command.name == "cookies":
                     command.result = context.cookies(["https://x.com", "https://twitter.com"])
                 else:
@@ -1455,15 +1557,21 @@ class XService:
         diesem Fall stillschweigend ohne Anmeldung weiter und scheiterte an
         jedem Beitrag mit einer irreführenden yt-dlp-Meldung.
         """
-        if not self._browser_open:
-            self._note_missing_cookies("Die X-Sitzung ist nicht geöffnet")
-            return None
-        try:
-            cookies = self._browser_call("cookies", timeout=15)
-        except Exception as exc:
-            logger.warning("X-Cookies konnten nicht gelesen werden: %s", public_error(exc))
-            self._note_missing_cookies("Die X-Cookies konnten nicht gelesen werden")
-            return None
+        if self._browser_open:
+            try:
+                cookies = self._browser_call("cookies", timeout=15)
+            except Exception as exc:
+                logger.warning("X-Cookies konnten nicht gelesen werden: %s", public_error(exc))
+                self._note_missing_cookies("Die X-Cookies konnten nicht gelesen werden")
+                return None
+        else:
+            # Ohne offenes Fenster: die per Token hinterlegte Sitzung nutzen.
+            # Damit laufen Downloads ganz ohne Browser – wichtig auf einem
+            # Rechner ohne Bildschirm.
+            cookies = self._manual_cookies()
+            if not cookies:
+                self._note_missing_cookies("Die X-Sitzung ist nicht geöffnet")
+                return None
         if not cookies:
             self._note_missing_cookies("Die X-Sitzung hat keine Cookies geliefert")
             return None

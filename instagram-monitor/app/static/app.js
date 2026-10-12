@@ -2120,6 +2120,22 @@ function showXVideos(){
           </div>
         </form>
         <div class="hint x-login-note" id="x_login_note" style="display:none"></div>
+        <details class="x-token-box" id="x_token_box">
+          <summary>Stattdessen mit Sitzungs-Token anmelden (empfohlen)</summary>
+          <div class="hint">Dein Passwort bleibt dabei komplett aussen vor, und X sieht keine neue Anmeldung – die vorhandene Sitzung läuft einfach weiter. Downloads brauchen dann kein Browserfenster mehr.
+            <br>So kommst du an die Werte: Bei <b>x.com</b> im Browser anmelden → <b>F12</b> → Reiter <b>Anwendung</b> bzw. <b>Application</b> → links <b>Cookies</b> → <b>https://x.com</b> → die Zeilen <code>auth_token</code> und <code>ct0</code> heraussuchen und jeweils den Wert kopieren.
+            <br><b>Behandle die Werte wie dein Passwort</b> – wer sie hat, ist in deinem Konto.</div>
+          <form class="x-login-form" autocomplete="off" onsubmit="event.preventDefault();xSubmitTokens()">
+            <label><span>auth_token</span>
+              <input id="x_auth_token" type="password" maxlength="200" autocomplete="off" spellcheck="false" data-1p-ignore data-lpignore="true"></label>
+            <label><span>ct0</span>
+              <input id="x_ct0" type="password" maxlength="200" autocomplete="off" spellcheck="false" data-1p-ignore data-lpignore="true"></label>
+            <div class="x-login-actions">
+              <button class="btn" type="submit" id="x_token_submit">Sitzung übernehmen</button>
+              <button class="btn ghost" type="button" id="x_token_forget" onclick="xForgetTokens()">Gespeicherte Sitzung löschen</button>
+            </div>
+          </form>
+        </details>
       </div>
       <div class="panel x-search-box">
         <label class="x-query"><span>Hashtag oder Suchbegriff</span><input id="x_query" maxlength="120" placeholder="#fussball oder eine Phrase" onkeydown="if(event.key==='Enter')xStartSearch()"></label>
@@ -2160,11 +2176,13 @@ async function xLoadCsrf(){
 }
 
 function xSetLoginMode(isLocal){
-  const form=$("x_login_form"), note=$("x_login_note");
+  const form=$("x_login_form"), note=$("x_login_note"), tokens=$("x_token_box");
   if(!form||!note) return;
   form.style.display=isLocal?"":"none";
+  // Die Token sind so empfindlich wie das Passwort – derselbe Schutz.
+  if(tokens) tokens.style.display=isLocal?"":"none";
   note.style.display=isLocal?"none":"block";
-  if(!isLocal) note.textContent="Die X-Anmeldung mit Passwort ist nur direkt am PC möglich. Über das Netzwerk (Handy/Tablet) lehnt der Server sie ab.";
+  if(!isLocal) note.textContent="Die X-Anmeldung ist nur direkt am PC möglich – mit Passwort wie mit Sitzungs-Token. Über das Netzwerk (Handy/Tablet) lehnt der Server sie ab. Suchen und Herunterladen geht von hier aus trotzdem.";
 }
 
 async function xLoadStatus(){
@@ -2182,7 +2200,10 @@ async function xLoadStatus(){
   }else{
     if(submit) submit.disabled=false;
     label.classList.toggle("ok",!!data.session_confirmed);
-    label.textContent=data.session_confirmed ? "Sitzung bereit" : (data.browser_open ? "Browser geöffnet" : "Sitzung nicht geöffnet");
+    label.textContent=data.session_confirmed
+      ? (data.manual_session ? "Sitzung bereit (Token)" : "Sitzung bereit")
+      : (data.browser_open ? "Browser geöffnet"
+         : (data.manual_session ? "Token hinterlegt" : "Sitzung nicht geöffnet"));
     xSetWarning(data.warning||(!data.ffmpeg ? "FFmpeg wurde nicht gefunden. Die App nutzt nach Möglichkeit eine einzelne MP4-Variante; getrennte beste Video-/Audiospuren können FFmpeg benötigen." : ""));
   }
   if(data.search && data.search.items && data.search.items.length){
@@ -2210,6 +2231,43 @@ async function xOpenLogin(){
 /* Direkte Anmeldung: Die Zugangsdaten gehen nur an den lokalen Server, der
    sie ins sichtbare X-Fenster eintippt. Das Passwortfeld wird sofort danach
    geleert – gespeichert wird es nirgends. */
+async function xSubmitTokens(){
+  const a=$("x_auth_token"), c=$("x_ct0");
+  if(!a||!c) return;
+  const authToken=(a.value||"").trim(), ct0=(c.value||"").trim();
+  if(!authToken||!ct0){ toast("Bitte beide Werte eintragen.","err"); (authToken?c:a).focus(); return; }
+  const btn=$("x_token_submit"); btn.disabled=true; btn.textContent="Wird übernommen …";
+  let result={status:0,data:{}};
+  try{
+    if(!xCsrfToken) await xLoadCsrf();
+    if(!xCsrfToken){ toast("Nur direkt am PC möglich.","err"); return; }
+    result=await api("/api/x/tokens",{method:"POST",
+      headers:{"Content-Type":"application/json","X-CSRF-Token":xCsrfToken},
+      body:JSON.stringify({auth_token:authToken,ct0:ct0})});
+  } finally {
+    a.value=""; c.value="";            // Token nicht im Formular liegen lassen
+    btn.disabled=false; btn.textContent="Sitzung übernehmen";
+  }
+  const data=result.data||{};
+  if(result.status===403){ xCsrfToken=""; xSetLoginMode(false); }
+  if(data.error){ toast(data.error,"err"); xSetWarning(data.error); return; }
+  xSetWarning("");
+  toast(data.message||"X-Sitzung übernommen.","ok");
+  const box=$("x_token_box"); if(box) box.open=false;
+  xLoadStatus();
+}
+
+async function xForgetTokens(){
+  if(!confirm("Gespeicherte X-Sitzung löschen?")) return;
+  if(!xCsrfToken) await xLoadCsrf();
+  if(!xCsrfToken){ toast("Nur direkt am PC möglich.","err"); return; }
+  const {data}=await api("/api/x/tokens/forget",{method:"POST",
+    headers:{"Content-Type":"application/json","X-CSRF-Token":xCsrfToken}});
+  if(data.error){ toast(data.error,"err"); return; }
+  toast(data.removed?"Gespeicherte Sitzung gelöscht.":"Es war keine gespeichert.","ok");
+  xLoadStatus();
+}
+
 async function xSubmitLogin(){
   const idField=$("x_identifier"), userField=$("x_username"), pwField=$("x_password");
   if(!idField||!pwField) return;
