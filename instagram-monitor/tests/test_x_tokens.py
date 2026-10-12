@@ -139,3 +139,69 @@ def test_the_chromium_hint_points_at_the_running_interpreter():
     assert sys.executable in hinweis
     assert "playwright install chromium" in hinweis
     assert "setup-x-browser" in hinweis
+
+
+# --- Die Sitzung muss den Neustart überleben -------------------------------
+
+
+def _neuer_dienst(tmp_path: Path) -> XService:
+    """Wie ein Neustart der App: alles frisch, nur die Platte bleibt."""
+    db = Database(tmp_path / "d.db")
+    settings = Settings(db, default_download_dir=str(tmp_path / "dl"))
+    return XService(db, settings, tmp_path / "session")
+
+
+def test_a_stored_session_survives_a_restart(tmp_path: Path):
+    """Der Fehler: Nach jedem Start stand wieder „nicht angemeldet“ da."""
+    erst = _neuer_dienst(tmp_path)
+    erst.login_with_tokens(AUTH, CT0)
+    erst.db.close()
+
+    nach_neustart = _neuer_dienst(tmp_path)
+    assert nach_neustart.has_manual_session() is True
+    assert nach_neustart.status()["session_confirmed"] is True
+    assert nach_neustart.status()["manual_session"] is True
+    nach_neustart.db.close()
+
+
+def test_without_tokens_a_restart_is_not_signed_in(tmp_path: Path):
+    dienst = _neuer_dienst(tmp_path)
+    assert dienst.status()["session_confirmed"] is False
+    dienst.db.close()
+
+
+# --- X tauscht ct0 aus; die Ablage muss nachziehen -------------------------
+
+
+def _browser_cookies(auth: str, ct0: str) -> list[dict]:
+    return [
+        {"name": "auth_token", "value": auth, "domain": ".x.com"},
+        {"name": "ct0", "value": ct0, "domain": ".x.com"},
+        {"name": "guest_id", "value": "v1%3A123", "domain": ".x.com"},
+    ]
+
+
+def test_a_rotated_ct0_is_picked_up(service: XService):
+    service.login_with_tokens(AUTH, CT0)
+    neues_ct0 = "c" * 64
+    service._refresh_manual_session(_browser_cookies(AUTH, neues_ct0))
+    gespeichert = json.loads(
+        (service.session_dir / "manual_session.json").read_text(encoding="utf-8")
+    )
+    assert gespeichert == {"auth_token": AUTH, "ct0": neues_ct0}
+
+
+def test_incomplete_browser_cookies_keep_the_old_session(service: XService):
+    """Lieber den alten Stand behalten als die Anmeldung wegwerfen."""
+    service.login_with_tokens(AUTH, CT0)
+    service._refresh_manual_session([{"name": "ct0", "value": "d" * 64}])
+    gespeichert = json.loads(
+        (service.session_dir / "manual_session.json").read_text(encoding="utf-8")
+    )
+    assert gespeichert == {"auth_token": AUTH, "ct0": CT0}
+
+
+def test_without_a_manual_session_nothing_is_written(service: XService):
+    service._refresh_manual_session(_browser_cookies(AUTH, CT0))
+    assert not (service.session_dir / "manual_session.json").exists()
+    assert service.has_manual_session() is False

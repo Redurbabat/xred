@@ -591,7 +591,11 @@ class XService:
         self._browser_thread: Optional[threading.Thread] = None
         self._browser_start_error = ""
         self._browser_open = False
-        self._session_confirmed = False
+        # Eine per Token hinterlegte Sitzung überlebt den Neustart – das muss
+        # die Anzeige auch wissen. Sonst stand nach jedem Start wieder
+        # „nicht angemeldet“ da, obwohl die Token längst gespeichert waren,
+        # und man trug sie unnötig erneut ein.
+        self._session_confirmed = bool(self._manual_cookies())
         self._operation_lock = threading.Lock()
         self.search_job = _JobState("search")
         self.download_job = _JobState("download")
@@ -706,6 +710,42 @@ class XService:
 
     def has_manual_session(self) -> bool:
         return bool(self._manual_cookies())
+
+    def _refresh_manual_session(self, cookies: list[dict[str, Any]]) -> None:
+        """Hält die hinterlegte Sitzung auf dem Stand des Browsers.
+
+        X tauscht ``ct0`` im laufenden Betrieb aus. Der einmal eingetragene
+        Wert veraltet dadurch, und irgendwann gilt die gespeicherte Sitzung
+        als ungültig – man müsste beide Werte neu heraussuchen. Liefert das
+        Fenster frischere Cookies, werden sie deshalb übernommen.
+        """
+        if not self._manual_cookies():
+            return  # ohne Token-Anmeldung nichts zu pflegen
+        frisch = {
+            str(c.get("name")): str(c.get("value") or "")
+            for c in cookies
+            if str(c.get("name")) in ("auth_token", "ct0")
+        }
+        try:
+            neu = {
+                "auth_token": validate_x_token(frisch.get("auth_token"), "auth_token"),
+                "ct0": validate_x_token(frisch.get("ct0"), "ct0"),
+            }
+        except XValidationError:
+            return  # unvollständig oder unbrauchbar: lieber den alten Stand behalten
+        path = self._manual_cookie_path()
+        try:
+            if json.loads(path.read_text(encoding="utf-8")) == neu:
+                return
+        except (OSError, ValueError):
+            pass
+        try:
+            path.write_text(json.dumps(neu), encoding="utf-8")
+            path.chmod(0o600)
+        except OSError:
+            logger.debug("Aufgefrischte X-Sitzung nicht speicherbar.", exc_info=True)
+        else:
+            logger.info("Hinterlegte X-Sitzung auf den Stand des Browsers gebracht.")
 
     def login(self, identifier: Any, password: Any, username: Any = "") -> dict[str, Any]:
         """Fill X's own login form in the visible browser window.
@@ -835,6 +875,17 @@ class XService:
                 for item in results:
                     self.db.upsert_x_post(item)
                     item["downloaded"] = self.db.is_x_post_downloaded(item["post_id"])
+                # Gelegenheit nutzen: X hat beim Suchen womöglich ein neues
+                # ct0 gesetzt. Wer nur sucht und nie herunterlädt, hätte
+                # sonst irgendwann eine veraltete hinterlegte Sitzung.
+                if self._browser_open and self.has_manual_session():
+                    try:
+                        self._refresh_manual_session(
+                            self._browser_call("cookies", timeout=15) or []
+                        )
+                    except Exception:
+                        logger.debug("Sitzung nach der Suche nicht auffrischbar.",
+                                     exc_info=True)
                 self._finish_job(
                     self.search_job,
                     release,
@@ -1581,6 +1632,7 @@ class XService:
                 logger.warning("X-Cookies konnten nicht gelesen werden: %s", public_error(exc))
                 self._note_missing_cookies("Die X-Cookies konnten nicht gelesen werden")
                 return None
+            self._refresh_manual_session(cookies or [])
         else:
             # Ohne offenes Fenster: die per Token hinterlegte Sitzung nutzen.
             # Damit laufen Downloads ganz ohne Browser – wichtig auf einem
