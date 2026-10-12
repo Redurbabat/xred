@@ -19,6 +19,30 @@ def signingKeyPw = cfg('IGMON_KEY_PASSWORD')
 def signingKeyAlias = cfg('IGMON_KEY_ALIAS') ?: 'igmonitor'
 def canSign = signingKeystore.exists() && signingStorePw && signingKeyPw
 
+// Jede Veröffentlichung bekommt eine eigene, steigende Nummer (in CI die
+// Lauf-Nummer). Vorher trug JEDE APK versionCode 1 und versionName 1.0 –
+// am Handy war nicht erkennbar, welcher Stand installiert ist, und Android
+// konnte Alt und Neu nicht auseinanderhalten.
+def buildVersionCode = (cfg('IGMON_VERSION_CODE') ?: '1') as int
+def buildVersionName = cfg('IGMON_VERSION_NAME') ?: '1.0'
+
+// Das Python-Paket der Anwendung hängt als Symlink unter
+// src/main/python/app. Ein Windows-Checkout ohne Entwicklermodus macht
+// daraus eine Textdatei – der Build liefe durch und erzeugte eine App ohne
+// Programmcode, die erst beim Start scheitert. Lieber sofort und deutlich
+// abbrechen.
+def pythonPackage = file('src/main/python/app')
+if (!pythonPackage.isDirectory()) {
+    throw new GradleException(
+        "Das Python-Paket fehlt: ${pythonPackage} ist kein Ordner.\n" +
+        "Es ist ein Symlink auf instagram-monitor/app. Unter Windows wird " +
+        "daraus beim Auschecken eine Textdatei, wenn Git keine Symlinks " +
+        "anlegen darf.\nAbhilfe: 'git config --global core.symlinks true' " +
+        "setzen und neu auschecken (Entwicklermodus aktiviert), oder den " +
+        "Ordner instagram-monitor/app von Hand hierher kopieren."
+    )
+}
+
 android {
     namespace 'de.redur.igmonitor'
     compileSdk 34
@@ -42,8 +66,8 @@ android {
         applicationId 'de.redur.igmonitor'
         minSdk 24
         targetSdk 34
-        versionCode 1
-        versionName '1.0'
+        versionCode buildVersionCode
+        versionName buildVersionName
         // Chaquopy mit Python 3.12 unterstützt nur 64-Bit-ABIs:
         // arm64-v8a (praktisch alle Handys) + x86_64 (Intel-Tablets/Emulator).
         ndk { abiFilters 'arm64-v8a', 'x86_64' }

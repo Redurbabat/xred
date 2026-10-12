@@ -47,6 +47,10 @@ jobs:
       IGMON_STORE_PASSWORD: ${{ secrets.IGMON_STORE_PASSWORD }}
       IGMON_KEY_PASSWORD: ${{ secrets.IGMON_KEY_PASSWORD }}
       IGMON_KEY_ALIAS: ${{ secrets.IGMON_KEY_ALIAS || 'igmonitor' }}
+      # Steigende Nummer je Lauf: Am Handy ist damit erkennbar, welcher
+      # Stand installiert ist, und Android erkennt Neueres als Neueres.
+      IGMON_VERSION_CODE: ${{ github.run_number }}
+      IGMON_VERSION_NAME: "1.0.${{ github.run_number }}"
     steps:
       - uses: actions/checkout@v4
 
@@ -125,6 +129,8 @@ jobs:
           name: "📱 Instagram Monitor – Android-App"
           body: |
             Neueste Android-App (wird bei jeder Änderung automatisch neu gebaut).
+
+            **Version:** 1.0.${{ github.run_number }} · Stand ${{ github.sha }}
 
             **Installation auf dem Handy:**
             1. Diese Seite auf dem Handy öffnen und `InstagramMonitor.apk` herunterladen.
