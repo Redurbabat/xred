@@ -53,6 +53,8 @@ _USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
 # Sitzungs-Cookies von X: auth_token ist 40 Hex-Zeichen, ct0 je nach
 # Zeitpunkt 32 bis 160. Grosszuegig gefasst, aber ohne Sonderzeichen.
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+# Von diesem Host liefert X seine Videodateien aus.
+_MEDIA_HOST = "video.twimg.com"
 _TOKEN_MIN, _TOKEN_MAX = 16, 200
 _TOKEN_RE = re.compile(rf"^[0-9a-fA-F]{{{_TOKEN_MIN},{_TOKEN_MAX}}}$")
 # Von Hand hinterlegte Sitzung (Token-Anmeldung) im Profilordner.
@@ -336,6 +338,24 @@ def chromium_install_hint() -> str:
         f"Am einfachsten einmalig {skript} ausführen. "
         f'Oder von Hand: "{sys.executable}" -m playwright install chromium.'
     )
+
+
+def is_media_url(value: Any) -> bool:
+    """Nur echte Videoadressen von X durchlassen.
+
+    Die Adressen stammen aus dem Netzwerkverkehr der Seite – also aus einer
+    Quelle, die wir nicht kontrollieren. Deshalb streng: HTTPS, exakt der
+    Medien-Host von X, und eine Videoendung. Ohne diese Prüfung könnte eine
+    eingebettete Fremdseite der App eine beliebige Adresse unterschieben.
+    """
+    try:
+        teile = urlsplit(str(value or ""))
+    except ValueError:
+        return False
+    if teile.scheme != "https" or (teile.hostname or "").lower() != _MEDIA_HOST:
+        return False
+    pfad = teile.path.lower()
+    return pfad.endswith(".m3u8") or pfad.endswith(".mp4")
 
 
 def ffmpeg_path() -> str:
@@ -1318,6 +1338,8 @@ class XService:
                     command.result = self._login_on_page(page, **command.payload)
                 elif command.name == "search":
                     command.result = self._search_visible_page(page, **command.payload)
+                elif command.name == "media_urls":
+                    command.result = self._collect_media_urls(page, **command.payload)
                 elif command.name == "set_cookies":
                     context.add_cookies(command.payload.get("cookies") or [])
                     command.result = {"ok": True}
@@ -1793,6 +1815,74 @@ class XService:
             pass
         return path
 
+    def _collect_media_urls(self, page: Any, post_url: str, seconds: float = 15.0) -> list[str]:
+        """Öffnet den Beitrag im angemeldeten Fenster und liest mit, welche
+        Videoadressen X dabei lädt.
+
+        Der Umweg ist nötig, weil X die Schnittstelle für als sensibel
+        eingestufte Beiträge verschlossen hält („No video could be found“) –
+        im Browser zeigt es dieselben Videos aber an. Was dort tatsächlich
+        über die Leitung geht, lässt sich mitlesen.
+        """
+        gefunden: list[str] = []
+
+        def merken(antwort: Any) -> None:
+            try:
+                url = antwort.url
+            except Exception:
+                return
+            if is_media_url(url) and url not in gefunden:
+                gefunden.append(url)
+
+        page.on("response", merken)
+        try:
+            page.goto(post_url, wait_until="commit", timeout=60_000)
+            try:
+                page.locator("article").first.wait_for(state="visible", timeout=20_000)
+            except Exception:
+                logger.debug("Beitragsseite zeigt keine Karte.", exc_info=True)
+            # Warnkachel wegklicken und Wiedergabe anstoßen – ohne sie lädt
+            # X das Video gar nicht erst.
+            for selector in (
+                '[data-testid="previewInterstitial"]',
+                'button:has-text("Anzeigen")',
+                'button:has-text("View")',
+                '[data-testid="playButton"]',
+                "video",
+            ):
+                try:
+                    ziel = page.locator(selector).first
+                    if ziel.count():
+                        ziel.click(timeout=3_000)
+                except Exception:
+                    continue
+            ende = time.monotonic() + max(3.0, float(seconds))
+            while time.monotonic() < ende:
+                page.wait_for_timeout(500)
+                if gefunden and time.monotonic() > ende - seconds + 4:
+                    break  # etwas Vorlauf, damit auch die beste Spur dabei ist
+        finally:
+            try:
+                page.remove_listener("response", merken)
+            except Exception:
+                logger.debug("Mithören konnte nicht beendet werden.", exc_info=True)
+        # Die Wiedergabeliste (.m3u8) enthält alle Qualitätsstufen und ist
+        # deshalb der bessere Ausgangspunkt als eine einzelne .mp4-Spur.
+        gefunden.sort(key=lambda u: 0 if u.lower().split("?")[0].endswith(".m3u8") else 1)
+        logger.info("Browser-Rückfall: %d Medienadresse(n) mitgelesen.", len(gefunden))
+        return gefunden[:5]
+
+    def _media_urls_via_browser(self, post_url: str) -> list[str]:
+        """Wie oben, aber von außerhalb des Browser-Threads aufrufbar."""
+        try:
+            urls = self._browser_call(
+                "media_urls", {"post_url": post_url}, timeout=90
+            )
+        except Exception as exc:
+            logger.info("Browser-Rückfall nicht möglich: %s", public_error(exc))
+            return []
+        return [u for u in (urls or []) if is_media_url(u)]
+
     @staticmethod
     def _alt_urls(row: Any) -> list[str]:
         """Weitere Beitragslinks derselben Karte (geprüft, höchstens drei)."""
@@ -1898,6 +1988,22 @@ class XService:
                         self.download_job.update(
                             message=f"{post_id}: zitierter Beitrag wird versucht …"
                         )
+            if letzter_fehler is not None and not self.download_job.cancel_event.is_set():
+                # Letzte Möglichkeit: X gibt über die Schnittstelle nichts
+                # heraus, zeigt das Video im angemeldeten Fenster aber sehr
+                # wohl. Also dort nachsehen, welche Adressen es wirklich lädt.
+                self.download_job.update(message=f"{post_id}: Browser-Rückfall …")
+                for medienadresse in self._media_urls_via_browser(post_url):
+                    try:
+                        with factory(options) as ydl:
+                            ydl.extract_info(medienadresse, download=True)
+                        letzter_fehler = None
+                        logger.info("X-Download %s über den Browser geholt.", post_id)
+                        break
+                    except Exception as exc:
+                        if self.download_job.cancel_event.is_set():
+                            raise _DownloadCancelled() from exc
+                        letzter_fehler = exc
             if letzter_fehler is not None:
                 raise letzter_fehler
             media_files = sorted(

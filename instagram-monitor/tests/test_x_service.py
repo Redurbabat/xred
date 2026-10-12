@@ -1490,3 +1490,196 @@ def test_alt_urls_are_validated_before_use():
     assert XService._alt_urls({}) == []
     viele = " ".join(f"https://x.com/a/status/{n}" for n in range(1111111, 1111120))
     assert len(XService._alt_urls({"alt_urls": viele})) == 3
+
+
+# --- Browser-Rückfall: holen, was die Schnittstelle verweigert -------------
+
+
+@pytest.mark.parametrize("gut", [
+    "https://video.twimg.com/ext_tw_video/123/pu/pl/abc.m3u8",
+    "https://video.twimg.com/ext_tw_video/123/pu/vid/720x1280/abc.mp4",
+    "https://video.twimg.com/amplify_video/1/vid/avc1/x.mp4?tag=14",
+])
+def test_real_x_media_addresses_are_accepted(gut):
+    from app.x_service import is_media_url
+    assert is_media_url(gut) is True
+
+
+@pytest.mark.parametrize("schlecht", [
+    "http://video.twimg.com/a.m3u8",              # kein HTTPS
+    "https://boese.example/a.m3u8",               # fremder Host
+    "https://video.twimg.com.boese.example/a.mp4",  # Host nur vorgetaeuscht
+    "https://pbs.twimg.com/media/bild.jpg",       # kein Video
+    "https://video.twimg.com/skript.js",          # falsche Endung
+    "", None, 42,
+])
+def test_foreign_or_odd_addresses_are_refused(schlecht):
+    from app.x_service import is_media_url
+    assert is_media_url(schlecht) is False
+
+
+def test_the_browser_fallback_only_passes_on_checked_addresses(tmp_path: Path):
+    """Auch wenn der Browser Unsinn meldet, darf nichts davon durchrutschen."""
+    dienst = _list_service(tmp_path)
+    dienst._browser_call = lambda *a, **k: [
+        "https://video.twimg.com/ext_tw_video/1/pl/gut.m3u8",
+        "https://boese.example/schad.mp4",
+        "nicht-mal-eine-adresse",
+    ]
+    assert dienst._media_urls_via_browser("https://x.com/a/status/1") == [
+        "https://video.twimg.com/ext_tw_video/1/pl/gut.m3u8"
+    ]
+    dienst.db.close()
+
+
+def test_a_broken_browser_does_not_break_the_download(tmp_path: Path):
+    dienst = _list_service(tmp_path)
+
+    def kaputt(*a, **k):
+        raise RuntimeError("Fenster ist zu")
+
+    dienst._browser_call = kaputt
+    assert dienst._media_urls_via_browser("https://x.com/a/status/1") == []
+    dienst.db.close()
+
+
+class _NurBrowserYdl:
+    """Scheitert an der Beitragsadresse, kann aber die Medienadresse laden."""
+
+    aufrufe: list[str] = []
+
+    def __init__(self, options) -> None:
+        self.options = options
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def extract_info(self, url, download=True):
+        _NurBrowserYdl.aufrufe.append(url)
+        if "video.twimg.com" not in url:
+            raise RuntimeError("No video could be found in this tweet")
+        pfad = Path(self.options["outtmpl"].replace("%(autonumber)02d", "01")
+                    .replace("%(ext)s", "mp4"))
+        pfad.parent.mkdir(parents=True, exist_ok=True)
+        pfad.write_bytes(b"video")
+        return {"id": "1"}
+
+
+def test_what_the_api_refuses_is_fetched_through_the_browser(tmp_path: Path):
+    """Der eigentliche Zweck: sensible Beiträge doch noch bekommen."""
+    _NurBrowserYdl.aufrufe = []
+    db = Database(tmp_path / "d.db")
+    settings = Settings(db, default_download_dir=str(tmp_path / "downloads"))
+    db.upsert_x_post({
+        "post_id": "6666666666", "username": "alice", "author_name": "Alice",
+        "post_url": "https://x.com/alice/status/6666666666",
+        "search_query": "#test", "caption": "", "preview_url": "", "published_at": "",
+    })
+    service = XService(db, settings, tmp_path / "session",
+                       ytdlp_factory=lambda options: _NurBrowserYdl(options))
+    service._export_cookie_file = lambda: None
+    service._media_urls_via_browser = lambda url: [
+        "https://video.twimg.com/ext_tw_video/6/pl/beste.m3u8"
+    ]
+
+    assert service.start_download(["6666666666"])
+    state = _wait(service.download_job)
+    assert state["downloaded"] == 1, state
+    # Erst der Beitrag selbst, dann die mitgelesene Medienadresse.
+    assert _NurBrowserYdl.aufrufe == [
+        "https://x.com/alice/status/6666666666",
+        "https://video.twimg.com/ext_tw_video/6/pl/beste.m3u8",
+    ]
+    assert db.is_x_post_downloaded("6666666666")
+    db.close()
+
+
+def test_without_any_media_address_the_original_reason_is_reported(tmp_path: Path):
+    _NurBrowserYdl.aufrufe = []
+    db = Database(tmp_path / "d.db")
+    settings = Settings(db, default_download_dir=str(tmp_path / "downloads"))
+    db.upsert_x_post({
+        "post_id": "6666666667", "username": "alice", "author_name": "Alice",
+        "post_url": "https://x.com/alice/status/6666666667",
+        "search_query": "#test", "caption": "", "preview_url": "", "published_at": "",
+    })
+    service = XService(db, settings, tmp_path / "session",
+                       ytdlp_factory=lambda options: _NurBrowserYdl(options))
+    service._export_cookie_file = lambda: None
+    service._media_urls_via_browser = lambda url: []
+
+    assert service.start_download(["6666666667"])
+    state = _wait(service.download_job)
+    assert state["failed"] == 1
+    assert "kein Video heraus" in state["items"][0]["error"]
+    db.close()
+
+
+class _MithoerSeite:
+    """Seite, die beim Öffnen ein paar Antworten „sendet“."""
+
+    def __init__(self, urls: list[str]) -> None:
+        self.urls = urls
+        self.zuhoerer: list = []
+        self.url = "about:blank"
+        self.geoeffnet = ""
+
+    def on(self, ereignis, rueckruf):
+        assert ereignis == "response"
+        self.zuhoerer.append(rueckruf)
+
+    def remove_listener(self, ereignis, rueckruf):
+        self.zuhoerer.remove(rueckruf)
+
+    def goto(self, url, wait_until="load", timeout=0):
+        self.geoeffnet = url
+        for u in self.urls:                      # X laedt die Medien
+            for z in list(self.zuhoerer):
+                z(type("A", (), {"url": u})())
+
+    def locator(self, selector):
+        return type("L", (), {
+            "first": property(lambda s: s),
+            "count": lambda s: 0,
+            "click": lambda s, timeout=0: None,
+            "wait_for": lambda s, state="visible", timeout=0: None,
+        })()
+
+    def wait_for_timeout(self, ms):
+        return None
+
+
+def test_only_checked_addresses_are_collected(tmp_path: Path):
+    dienst = _list_service(tmp_path)
+    seite = _MithoerSeite([
+        "https://pbs.twimg.com/media/bild.jpg",                       # kein Video
+        "https://boese.example/schad.mp4",                            # fremd
+        "https://video.twimg.com/ext_tw_video/1/vid/720x1280/a.mp4",  # gut
+        "https://video.twimg.com/ext_tw_video/1/pl/a.m3u8",           # gut, bevorzugt
+        "https://video.twimg.com/ext_tw_video/1/pl/a.m3u8",           # doppelt
+    ])
+    treffer = dienst._collect_media_urls(seite, "https://x.com/a/status/1", seconds=0)
+    assert treffer == [
+        "https://video.twimg.com/ext_tw_video/1/pl/a.m3u8",           # Liste zuerst
+        "https://video.twimg.com/ext_tw_video/1/vid/720x1280/a.mp4",
+    ]
+    assert seite.geoeffnet == "https://x.com/a/status/1"
+    assert seite.zuhoerer == []          # Mithören sauber beendet
+    dienst.db.close()
+
+
+def test_the_listener_is_removed_even_after_a_failure(tmp_path: Path):
+    dienst = _list_service(tmp_path)
+    seite = _MithoerSeite([])
+
+    def kaputt(url, wait_until="load", timeout=0):
+        raise RuntimeError("Seite nicht erreichbar")
+
+    seite.goto = kaputt
+    with pytest.raises(RuntimeError):
+        dienst._collect_media_urls(seite, "https://x.com/a/status/1", seconds=0)
+    assert seite.zuhoerer == []
+    dienst.db.close()

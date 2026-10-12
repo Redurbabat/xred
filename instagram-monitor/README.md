@@ -111,6 +111,25 @@ und „alle neuen“-Downloads. Gesucht werden nur sichtbare X-Beitragskarten mi
 Video. Statuslinks werden strikt auf `https://x.com/<name>/status/<id>`
 normalisiert und anhand der Beitrags-ID dedupliziert.
 
+### Wenn X nichts herausgibt: der Browser-Rückfall
+
+Als **sensibel eingestufte** Beiträge gibt X über seine Schnittstelle oft
+nicht heraus – yt-dlp meldet dann „No video could be found in this
+tweet“, obwohl das Video existiert. Im angemeldeten Browser zeigt X
+dieselben Videos aber an.
+
+Genau dort setzt der Rückfall an: Scheitern der Beitrag selbst und die
+weiteren Links der Karte, öffnet die App den Beitrag im angemeldeten
+Chromium-Fenster und liest mit, welche Videoadressen X dabei lädt. Diese
+Adressen gehen dann an yt-dlp. Übernommen werden ausschließlich
+`https`-Adressen vom Medien-Host `video.twimg.com` mit der Endung `.m3u8`
+oder `.mp4`; alles andere wird verworfen. Die Wiedergabeliste (`.m3u8`)
+hat Vorrang, weil sie alle Qualitätsstufen enthält.
+
+Dafür muss das Chromium-Fenster verfügbar sein (siehe
+`setup-x-browser.bat`). Ohne Browser bleibt es bei der bisherigen
+Meldung.
+
 ### Blickschutz (👁 / 🙈)
 
 Der Knopf neben „♥ Likes" verbirgt in **allen** X-Ansichten – Suche,
