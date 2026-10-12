@@ -117,7 +117,8 @@ CREATE TABLE IF NOT EXISTS x_posts (
     downloaded    INTEGER NOT NULL DEFAULT 0,
     downloaded_at TEXT,
     local_path    TEXT,
-    last_error    TEXT
+    last_error    TEXT,
+    alt_urls      TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_x_posts_discovered ON x_posts (discovered_at DESC);
@@ -195,6 +196,15 @@ class Database:
         except sqlite3.OperationalError:
             # Tabelle existiert nicht (frische DB) oder Spalte schon da.
             pass
+
+        # Weitere Beitragslinks derselben Karte (zitierter Beitrag). Ohne
+        # sie bleibt bei einem Zitat nur der äußere Beitrag übrig – und der
+        # hat oft gar kein Video.
+        try:
+            self._conn.execute("ALTER TABLE x_posts ADD COLUMN alt_urls TEXT NOT NULL DEFAULT ''")
+            logger.info("Datenbank-Migration: Spalte alt_urls ergänzt.")
+        except sqlite3.OperationalError:
+            pass  # Tabelle fehlt noch (frische DB) oder Spalte existiert
 
         # Neue Spalten der account_activity-Tabelle nachrüsten (ältere DBs).
         for ddl in (
@@ -839,8 +849,8 @@ class Database:
             """
             INSERT INTO x_posts (
                 post_id, username, author_name, post_url, search_query,
-                caption, preview_url, published_at, discovered_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                caption, preview_url, published_at, discovered_at, alt_urls
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(post_id) DO UPDATE SET
                 username = excluded.username,
                 author_name = excluded.author_name,
@@ -849,7 +859,8 @@ class Database:
                 caption = excluded.caption,
                 preview_url = excluded.preview_url,
                 published_at = excluded.published_at,
-                discovered_at = excluded.discovered_at
+                discovered_at = excluded.discovered_at,
+                alt_urls = excluded.alt_urls
             """,
             (
                 str(item.get("post_id") or ""),
@@ -861,6 +872,10 @@ class Database:
                 str(item.get("preview_url") or ""),
                 str(item.get("published_at") or "") or None,
                 _now_utc(),
+                # Weitere Links derselben Beitragskarte, mit Leerzeichen
+                # getrennt. Bei einem Zitat steckt das Video oft nicht im
+                # äußeren, sondern im zitierten Beitrag.
+                " ".join(str(u) for u in (item.get("alt_urls") or []))[:2000],
             ),
         )
 

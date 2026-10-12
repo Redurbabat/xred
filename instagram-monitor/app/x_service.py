@@ -1041,6 +1041,23 @@ class XService:
 
             try:
                 cookie_file = self._export_cookie_file()
+                # Im Protokoll festhalten, OB angemeldet geladen wird. Ohne
+                # diese Zeile liess sich „No video could be found“ nicht von
+                # einer fehlenden Anmeldung unterscheiden – beides sieht im
+                # Log gleich aus.
+                if cookie_file is None:
+                    logger.warning(
+                        "X-Download läuft OHNE Anmeldung – als sensibel "
+                        "eingestufte Beiträge geben dann kein Video heraus."
+                    )
+                else:
+                    namen = sorted(
+                        zeile.split("\t")[5]
+                        for zeile in cookie_file.read_text(encoding="utf-8").splitlines()
+                        if zeile.count("\t") == 6
+                    )
+                    logger.info("X-Download läuft angemeldet (Cookies: %s).",
+                                ", ".join(namen) or "keine")
                 rows_by_id = {row["post_id"]: row for row in self.db.get_x_posts(ids)}
                 item_states = [
                     {"post_id": post_id, "state": "pending", "error": "", "paths": []}
@@ -1662,15 +1679,21 @@ class XService:
             hrefs = article.locator("a[href*='/status/']").evaluate_all(
                 "els => els.map(el => el.href)"
             )
-            post_url = ""
+            # ALLE Beitragslinks der Karte sammeln, nicht nur den ersten.
+            # Zitiert ein Beitrag einen anderen, stehen hier zwei – und das
+            # Video steckt dann oft im zitierten. Wer nur den ersten nimmt,
+            # bekommt beim Download „No video could be found in this tweet“.
+            gefunden: list[str] = []
             for href in hrefs:
                 try:
-                    post_url = normalize_post_url(href)
-                    break
+                    kandidat = normalize_post_url(href)
                 except XValidationError:
                     continue
-            if not post_url:
+                if kandidat not in gefunden:
+                    gefunden.append(kandidat)
+            if not gefunden:
                 return None
+            post_url, alt_urls = gefunden[0], gefunden[1:4]
             parts = urlsplit(post_url).path.split("/")
             username, post_id = parts[1], parts[3]
             published_at = ""
@@ -1707,6 +1730,7 @@ class XService:
                 "username": username,
                 "author_name": author_name,
                 "post_url": post_url,
+                "alt_urls": alt_urls,
                 "search_query": query,
                 "caption": caption,
                 "preview_url": preview_url,
@@ -1769,6 +1793,23 @@ class XService:
             pass
         return path
 
+    @staticmethod
+    def _alt_urls(row: Any) -> list[str]:
+        """Weitere Beitragslinks derselben Karte (geprüft, höchstens drei)."""
+        try:
+            roh = row["alt_urls"]
+        except (KeyError, IndexError, TypeError):
+            return []
+        geprueft: list[str] = []
+        for teil in str(roh or "").split():
+            try:
+                url = normalize_post_url(teil)
+            except XValidationError:
+                continue
+            if url not in geprueft:
+                geprueft.append(url)
+        return geprueft[:3]
+
     def _download_one(self, row: Any, cookie_file: Optional[Path]) -> tuple[str, list[str]]:
         post_id = str(row["post_id"])
         post_url = normalize_post_url(row["post_url"])
@@ -1830,13 +1871,35 @@ class XService:
             options["cookiefile"] = str(cookie_file)
         factory = self._ytdlp_factory or self._default_ytdlp_factory
         try:
-            try:
-                with factory(options) as ydl:
-                    ydl.extract_info(post_url, download=True)
-            except Exception as exc:
-                if self.download_job.cancel_event.is_set():
-                    raise _DownloadCancelled() from exc
-                raise
+            # Reihenfolge der Versuche: erst der Beitrag selbst, dann die
+            # weiteren Links derselben Karte. Zitiert ein Beitrag einen
+            # anderen, liegt das Video meist im zitierten – der äußere
+            # meldet dann „No video could be found in this tweet“. Statt
+            # dich den richtigen Link selbst suchen zu lassen, probiert die
+            # App ihn von sich aus.
+            versuche = [post_url] + self._alt_urls(row)
+            letzter_fehler: Optional[Exception] = None
+            for nummer, versuch in enumerate(versuche, 1):
+                try:
+                    with factory(options) as ydl:
+                        ydl.extract_info(versuch, download=True)
+                    letzter_fehler = None
+                    if nummer > 1:
+                        logger.info(
+                            "X-Download %s über den zitierten Beitrag geholt (%s).",
+                            post_id, versuch,
+                        )
+                    break
+                except Exception as exc:
+                    if self.download_job.cancel_event.is_set():
+                        raise _DownloadCancelled() from exc
+                    letzter_fehler = exc
+                    if nummer < len(versuche):
+                        self.download_job.update(
+                            message=f"{post_id}: zitierter Beitrag wird versucht …"
+                        )
+            if letzter_fehler is not None:
+                raise letzter_fehler
             media_files = sorted(
                 path for path in partial_dir.rglob("*")
                 if path.is_file() and path.suffix.lower() in _VIDEO_SUFFIXES

@@ -119,6 +119,11 @@ Suchergebnis gestanden haben. Gedacht für Videos, die dir jemand
 geschickt hat, oder die die Suche nicht erfasst. Sie landen unter
 `X/Links/<urheber>/Videos/`.
 
+Zitiert ein Beitrag einen anderen, stehen zwei Links auf derselben
+Karte – und das Video steckt oft im **zitierten** Beitrag. Die App merkt
+das von selbst: Scheitert der äußere Beitrag, probiert sie die weiteren
+Links derselben Karte automatisch, bevor sie aufgibt.
+
 Scheitert ein Download, steht der Grund jetzt **auf der Karte selbst**
 (roter Hinweis), und der Knopf wechselt auf „Erneut versuchen”. Vorher
 passierte scheinbar nichts und man sah nicht, woran es lag.

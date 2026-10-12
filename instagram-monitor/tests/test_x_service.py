@@ -1394,3 +1394,99 @@ def test_a_foreign_or_broken_link_is_refused(tmp_path: Path, schlecht):
     with pytest.raises(XValidationError):
         dienst.remember_link(schlecht)
     dienst.db.close()
+
+
+# --- Zitierter Beitrag: automatisch den richtigen Link nehmen --------------
+
+
+class _ZitatYdl:
+    """Liefert nur für EINE bestimmte Adresse ein Video, sonst Fehler."""
+
+    aufrufe: list[str] = []
+
+    def __init__(self, options, funktioniert: str) -> None:
+        self.options = options
+        self.funktioniert = funktioniert
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def extract_info(self, url, download=True):
+        _ZitatYdl.aufrufe.append(url)
+        if url != self.funktioniert:
+            raise RuntimeError("No video could be found in this tweet")
+        pfad = Path(self.options["outtmpl"].replace("%(autonumber)02d", "01")
+                    .replace("%(ext)s", "mp4"))
+        pfad.parent.mkdir(parents=True, exist_ok=True)
+        pfad.write_bytes(b"video")
+        return {"id": url.rsplit("/", 1)[-1]}
+
+
+def _zitat_dienst(tmp_path: Path, funktioniert: str, alt: str):
+    db = Database(tmp_path / "d.db")
+    settings = Settings(db, default_download_dir=str(tmp_path / "downloads"))
+    db.upsert_x_post({
+        "post_id": "7777777777", "username": "aussen", "author_name": "Aussen",
+        "post_url": "https://x.com/aussen/status/7777777777",
+        "alt_urls": [alt],
+        "search_query": "#test", "caption": "", "preview_url": "", "published_at": "",
+    })
+    service = XService(
+        db, settings, tmp_path / "session",
+        ytdlp_factory=lambda options: _ZitatYdl(options, funktioniert),
+    )
+    service._export_cookie_file = lambda: None
+    return service, db, settings
+
+
+def test_a_quoted_post_is_tried_automatically(tmp_path: Path):
+    """Der Nutzer soll den richtigen Link nicht selbst suchen müssen."""
+    innen = "https://x.com/innen/status/8888888888"
+    _ZitatYdl.aufrufe = []
+    service, db, settings = _zitat_dienst(tmp_path, funktioniert=innen, alt=innen)
+
+    assert service.start_download(["7777777777"])
+    state = _wait(service.download_job)
+    assert state["downloaded"] == 1, state
+    # Erst der äußere Beitrag, dann der zitierte.
+    assert _ZitatYdl.aufrufe == ["https://x.com/aussen/status/7777777777", innen]
+    assert db.is_x_post_downloaded("7777777777")
+    db.close()
+
+
+def test_the_outer_post_is_still_tried_first(tmp_path: Path):
+    aussen = "https://x.com/aussen/status/7777777777"
+    _ZitatYdl.aufrufe = []
+    service, db, _settings = _zitat_dienst(
+        tmp_path, funktioniert=aussen, alt="https://x.com/innen/status/8888888888"
+    )
+    assert service.start_download(["7777777777"])
+    assert _wait(service.download_job)["downloaded"] == 1
+    assert _ZitatYdl.aufrufe == [aussen]  # kein überflüssiger zweiter Versuch
+    db.close()
+
+
+def test_if_no_link_works_the_reason_is_reported(tmp_path: Path):
+    _ZitatYdl.aufrufe = []
+    service, db, _settings = _zitat_dienst(
+        tmp_path, funktioniert="https://x.com/niemand/status/9999999999",
+        alt="https://x.com/innen/status/8888888888",
+    )
+    assert service.start_download(["7777777777"])
+    state = _wait(service.download_job)
+    assert state["failed"] == 1
+    assert len(_ZitatYdl.aufrufe) == 2      # beide probiert
+    assert "kein Video heraus" in state["items"][0]["error"]
+    db.close()
+
+
+def test_alt_urls_are_validated_before_use():
+    """Ein manipulierter Eintrag darf keine fremde Adresse einschleusen."""
+    assert XService._alt_urls({"alt_urls": "https://boese.example/a/status/1"}) == []
+    assert XService._alt_urls({"alt_urls": ""}) == []
+    assert XService._alt_urls({}) == []
+    viele = " ".join(f"https://x.com/a/status/{n}" for n in range(1111111, 1111120))
+    assert len(XService._alt_urls({"alt_urls": viele})) == 3
