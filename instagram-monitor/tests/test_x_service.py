@@ -1683,3 +1683,80 @@ def test_the_listener_is_removed_even_after_a_failure(tmp_path: Path):
         dienst._collect_media_urls(seite, "https://x.com/a/status/1", seconds=0)
     assert seite.zuhoerer == []
     dienst.db.close()
+
+
+# --- „Nur neue“: Geladenes gar nicht erst einsammeln -----------------------
+
+
+class _KartenSeite:
+    """Seite mit einer festen Zahl Beitragskarten."""
+
+    def __init__(self, anzahl: int) -> None:
+        self.anzahl = anzahl
+        self.url = "https://x.com/i/bookmarks"
+
+    def goto(self, url, wait_until="load", timeout=0):
+        self.url = url
+
+    def locator(self, selector):
+        anzahl = self.anzahl if selector == "article" else 0
+        return type("L", (), {
+            "first": property(lambda s: s),
+            "count": lambda s: anzahl,
+            "nth": lambda s, i: i,
+            "wait_for": lambda s, state="visible", timeout=0: None,
+            "inner_text": lambda s, timeout=0: "",
+        })()
+
+    def evaluate(self, script):
+        return 0
+
+def _seite_mit_treffern(dienst, geladen: set[str], anzahl: int = 4):
+    """Liefert je Karte einen Treffer; „geladen“ gilt als heruntergeladen."""
+    def fake_article(article, query):
+        post_id = f"90000000{article}"
+        return {
+            "post_id": post_id, "username": "a", "author_name": "A",
+            "post_url": f"https://x.com/a/status/{post_id}", "alt_urls": [],
+            "search_query": query, "caption": "", "preview_url": "",
+            "published_at": "", "downloaded": post_id in geladen,
+        }
+    dienst._article_data = fake_article
+    return _KartenSeite(anzahl)
+
+
+def test_only_new_skips_what_is_already_downloaded(tmp_path: Path):
+    dienst = _list_service(tmp_path)
+    geladen = {"900000000", "900000002"}
+    seite = _seite_mit_treffern(dienst, geladen)
+    treffer = dienst._search_visible_page(
+        seite, "Lesezeichen", 10, "latest", False, _NoWait(), "bookmarks",
+        skip_downloaded=True,
+    )
+    ids = {t["post_id"] for t in treffer}
+    assert ids == {"900000001", "900000003"}
+    assert not (ids & geladen)
+    dienst.db.close()
+
+
+def test_without_the_filter_everything_comes_back(tmp_path: Path):
+    dienst = _list_service(tmp_path)
+    seite = _seite_mit_treffern(dienst, {"900000000", "900000002"})
+    treffer = dienst._search_visible_page(
+        seite, "Lesezeichen", 10, "latest", False, _NoWait(), "bookmarks",
+        skip_downloaded=False,
+    )
+    assert len(treffer) == 4
+    dienst.db.close()
+
+
+def test_the_limit_fills_up_with_new_hits(tmp_path: Path):
+    """Der eigentliche Zweck: 2 gewuenscht = 2 NEUE, nicht 2 bekannte."""
+    dienst = _list_service(tmp_path)
+    seite = _seite_mit_treffern(dienst, {"900000000", "900000001"}, anzahl=4)
+    treffer = dienst._search_visible_page(
+        seite, "Lesezeichen", 2, "latest", False, _NoWait(), "bookmarks",
+        skip_downloaded=True,
+    )
+    assert [t["post_id"] for t in treffer] == ["900000002", "900000003"]
+    dienst.db.close()

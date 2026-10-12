@@ -898,6 +898,7 @@ class XService:
         sort: Any = "latest",
         exclude_reposts: Any = False,
         source: Any = SOURCE_SEARCH,
+        skip_downloaded: Any = False,
     ) -> bool:
         normalized_source = validate_source(source)
         if normalized_source == SOURCE_SEARCH:
@@ -928,6 +929,7 @@ class XService:
                     bool(exclude_reposts),
                     self.search_job.cancel_event,
                     normalized_source,
+                    bool(skip_downloaded),
                 )
                 unique: dict[str, dict[str, Any]] = {}
                 unreadable = 0
@@ -1154,6 +1156,7 @@ class XService:
         exclude_reposts: bool,
         cancel_event: threading.Event,
         source: str = SOURCE_SEARCH,
+        skip_downloaded: bool = False,
     ) -> list[dict[str, Any]]:
         if self._browser_search_override is not None:
             return self._browser_search_override(
@@ -1163,6 +1166,7 @@ class XService:
                 exclude_reposts=exclude_reposts,
                 cancel_event=cancel_event,
                 source=source,
+                skip_downloaded=skip_downloaded,
             )
         return self._browser_call(
             "search",
@@ -1173,6 +1177,7 @@ class XService:
                 "exclude_reposts": exclude_reposts,
                 "cancel_event": cancel_event,
                 "source": source,
+                "skip_downloaded": skip_downloaded,
             },
             timeout=MAX_SEARCH_SECONDS + 45,
         )
@@ -1548,6 +1553,7 @@ class XService:
         exclude_reposts: bool,
         cancel_event: threading.Event,
         source: str = SOURCE_SEARCH,
+        skip_downloaded: bool = False,
     ) -> list[dict[str, Any]]:
         if source == SOURCE_SEARCH:
             target = build_search_url(query, sort, exclude_reposts)
@@ -1596,8 +1602,14 @@ class XService:
                 if cancel_event.is_set() or len(results) >= limit:
                     break
                 item = self._article_data(articles.nth(index), query)
-                if item is not None:
-                    results[item["post_id"]] = item
+                if item is None:
+                    continue
+                # „Nur neue“: Bereits geladene gar nicht erst aufnehmen, damit
+                # die gewünschte Anzahl mit NEUEN Treffern gefüllt wird statt
+                # immer wieder mit denselben.
+                if skip_downloaded and item.get("downloaded"):
+                    continue
+                results[item["post_id"]] = item
             self.search_job.update(
                 found=len(results), done=len(results), items=list(results.values()),
                 message=f"{len(results)} von {limit} Videobeiträgen gefunden …",

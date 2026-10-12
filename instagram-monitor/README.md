@@ -130,6 +130,21 @@ Dafür muss das Chromium-Fenster verfügbar sein (siehe
 `setup-x-browser.bat`). Ohne Browser bleibt es bei der bisherigen
 Meldung.
 
+### „Nur neue" (🆕 / 🗂)
+
+Der Knopf schaltet um, ob schon heruntergeladene Videos auftauchen:
+
+* **🗂 Alle** – wie bisher, Geladenes ist mit ✓ markiert.
+* **🆕 Nur neue** – Geladenes wird übersprungen, und zwar **schon beim
+  Sammeln**. Die eingestellte Anzahl füllt sich dadurch mit NEUEN
+  Treffern, statt immer wieder dieselben zu zeigen. Wirkt in Suche,
+  Lesezeichen und Likes.
+
+Gerade heruntergeladene Beiträge verschwinden auch nachträglich aus der
+Liste. Sind alle Treffer bereits geladen, erscheint ein Hinweis statt
+einer leeren Fläche. Die Einstellung bleibt nach einem Neustart
+erhalten.
+
 ### Blickschutz (👁 / 🙈)
 
 Der Knopf neben „♥ Likes" verbirgt in **allen** X-Ansichten – Suche,

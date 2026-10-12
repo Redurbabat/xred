@@ -2095,6 +2095,30 @@ const xFailed=new Map();
 let xPrivacy=false;
 try{ xPrivacy=localStorage.getItem("x_privacy")==="1"; }catch(e){}
 
+// „Nur neue“: Schon heruntergeladene Beitraege werden gar nicht erst
+// gesammelt – so füllt die gewünschte Anzahl sich mit NEUEN Treffern,
+// statt immer wieder dieselben zu zeigen. Wirkt in Suche, Lesezeichen
+// und Likes gleichermassen und gilt auch fuer bereits angezeigte Treffer.
+let xOnlyNew=false;
+try{ xOnlyNew=localStorage.getItem("x_only_new")==="1"; }catch(e){}
+
+function xToggleOnlyNew(){
+  xOnlyNew=!xOnlyNew;
+  try{ localStorage.setItem("x_only_new", xOnlyNew?"1":"0"); }catch(e){}
+  xUpdateOnlyNewButton();
+  xRenderResults();
+}
+
+function xUpdateOnlyNewButton(){
+  const b=$("x_onlynew_btn"); if(!b) return;
+  b.textContent=xOnlyNew?"🆕 Nur neue":"🗂 Alle";
+  b.title=xOnlyNew
+    ? "Schon geladene Videos werden uebersprungen. Klicken, um alle zu sehen."
+    : "Zeigt auch schon geladene Videos. Klicken, um sie zu ueberspringen.";
+  b.setAttribute("aria-pressed", xOnlyNew?"true":"false");
+  b.classList.toggle("active", xOnlyNew);
+}
+
 function xTogglePrivacy(){
   xPrivacy=!xPrivacy;
   try{ localStorage.setItem("x_privacy", xPrivacy?"1":"0"); }catch(e){}
@@ -2174,6 +2198,7 @@ function showXVideos(){
           <button class="btn" id="x_search_btn" onclick="xStartSearch()">Videos suchen</button>
           <button class="btn ghost" id="x_bookmarks_btn" onclick="xStartCollection('bookmarks')" title="Videos aus deinen X-Lesezeichen">🔖 Lesezeichen</button>
           <button class="btn ghost" id="x_likes_btn" onclick="xStartCollection('likes')" title="Videos aus deinen X-Likes">♥ Likes</button>
+          <button class="btn ghost" id="x_onlynew_btn" onclick="xToggleOnlyNew()">🗂 Alle</button>
           <button class="btn ghost" id="x_privacy_btn" onclick="xTogglePrivacy()">👁 Blickschutz aus</button>
           <button class="btn ghost" id="x_search_cancel" onclick="xCancelSearch()" style="display:none">Abbrechen</button>
         </div>
@@ -2196,7 +2221,7 @@ function showXVideos(){
       <details class="panel x-recent"><summary>Letzte X-Downloads</summary><div id="x_recent" class="hint">Noch keine X-Downloads gespeichert.</div></details>
       <div class="hint x-legal">Lade nur öffentlich zugängliche Inhalte herunter, für die du die erforderlichen Rechte besitzt, und beachte die X-Nutzungsbedingungen. Die App umgeht keine Zugriffs- oder Schutzmechanismen.</div>
     </section>`;
-  xUpdatePrivacyButton();   // gemerkte Einstellung sofort anzeigen
+  xUpdatePrivacyButton(); xUpdateOnlyNewButton();  // gemerkte Einstellungen anzeigen
   xLoadCsrf();
   xLoadStatus();
 }
@@ -2355,7 +2380,7 @@ async function xDownloadLink(){
 }
 
 async function xStartJob(fields,btnId){
-  const payload=Object.assign({limit:$("x_limit").value},fields);
+  const payload=Object.assign({limit:$("x_limit").value,skip_downloaded:xOnlyNew},fields);
   const btn=$(btnId); if(btn) btn.disabled=true;
   const {data}=await api("/api/x/search",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
   if(btn) btn.disabled=false;
@@ -2442,10 +2467,19 @@ function xApplyJobs(search,download){
 
 function xRenderResults(){
   const box=$("x_results"), toolbar=$("x_toolbar"); if(!box||!toolbar) return;
-  if(!xResults.length){ toolbar.style.display="none"; box.innerHTML='<div class="empty">Noch keine Videobeiträge gefunden.</div>'; return; }
+  // „Nur neue“ blendet Geladenes auch nachtraeglich aus – etwa die Treffer,
+  // die gerade eben heruntergeladen wurden.
+  const sichtbar=xOnlyNew?xResults.filter(p=>!p.downloaded):xResults;
+  if(!sichtbar.length){
+    toolbar.style.display="none";
+    box.innerHTML=`<div class="empty">${xResults.length
+      ? "Alle "+xResults.length+" Treffer sind schon geladen. Mit „🗂 Alle“ wieder einblenden."
+      : "Noch keine Videobeiträge gefunden."}</div>`;
+    return;
+  }
   toolbar.style.display="flex"; xUpdateSelected(); box.innerHTML="";
   const grid=document.createElement("div"); grid.className="x-grid";
-  xResults.forEach(p=>{
+  sichtbar.forEach(p=>{
     const card=document.createElement("article"); card.className="x-card"+(p.downloaded?" downloaded":"");
     const date=p.published_at?new Date(p.published_at).toLocaleString("de-DE"):"";
     card.innerHTML=`

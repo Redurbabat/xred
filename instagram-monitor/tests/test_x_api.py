@@ -515,3 +515,24 @@ def test_a_foreign_link_is_refused_by_the_endpoint(api_env, url):
     antwort = client.post("/api/x/download-link", json={"url": url})
     assert antwort.status_code == 400
     assert antwort.get_json()["error"]
+
+
+def test_the_only_new_setting_reaches_the_search(api_env):
+    """Der Knopf in der Oberflaeche muss auch wirklich ankommen."""
+    client, _db, service = api_env
+    gesehen = {}
+    service._browser_search_override = lambda **kwargs: gesehen.update(kwargs) or []
+
+    assert client.post("/api/x/search",
+                       json={"query": "#t", "skip_downloaded": True}).status_code == 202
+    end = time.monotonic() + 2
+    while time.monotonic() < end and service.search_job.snapshot()["running"]:
+        time.sleep(0.01)
+    assert gesehen["skip_downloaded"] is True
+
+    gesehen.clear()
+    assert client.post("/api/x/search", json={"query": "#t"}).status_code == 202
+    end = time.monotonic() + 2
+    while time.monotonic() < end and service.search_job.snapshot()["running"]:
+        time.sleep(0.01)
+    assert gesehen["skip_downloaded"] is False     # Standard: alles zeigen
