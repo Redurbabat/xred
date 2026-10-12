@@ -111,7 +111,19 @@ und „alle neuen“-Downloads. Gesucht werden nur sichtbare X-Beitragskarten mi
 Video. Statuslinks werden strikt auf `https://x.com/<name>/status/<id>`
 normalisiert und anhand der Beitrags-ID dedupliziert.
 
-### Eigene Lesezeichen und Likes („Verlauf“)
+### Einzelnen Link herunterladen
+
+Unter der Suche gibt es das Feld **„Oder Link einfügen”**. Dort passt
+jeder X-Beitragslink hinein – er muss **nicht** vorher in einem
+Suchergebnis gestanden haben. Gedacht für Videos, die dir jemand
+geschickt hat, oder die die Suche nicht erfasst. Sie landen unter
+`X/Links/<urheber>/Videos/`.
+
+Scheitert ein Download, steht der Grund jetzt **auf der Karte selbst**
+(roter Hinweis), und der Knopf wechselt auf „Erneut versuchen”. Vorher
+passierte scheinbar nichts und man sah nicht, woran es lag.
+
+### Eigene Lesezeichen und Likes („Verlauf”)
 
 Neben der Suche gibt es zwei Knöpfe für deine eigenen Listen – dieselben, die
 in der X-App unter **Verlauf** in den Reitern „Lesezeichen“ und ♥ stehen:

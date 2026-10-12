@@ -491,3 +491,27 @@ def test_the_stored_session_can_be_removed_again(api_env):
     assert removed.status_code == 200
     assert removed.get_json()["removed"] is True
     assert service.has_manual_session() is False
+
+
+def test_any_x_link_can_be_downloaded_without_a_search(api_env):
+    """Der eingefügte Link muss nicht vorher in einem Ergebnis stehen."""
+    client, db, _service = api_env
+    antwort = client.post(
+        "/api/x/download-link",
+        json={"url": "https://x.com/alice/status/1234567890"},
+    )
+    assert antwort.status_code == 202
+    assert antwort.get_json()["post_id"] == "1234567890"
+    assert db.get_x_post("1234567890") is not None
+
+
+@pytest.mark.parametrize("url", [
+    "https://example.com/a/status/1234567890",
+    "https://x.com/alice",
+    "",
+])
+def test_a_foreign_link_is_refused_by_the_endpoint(api_env, url):
+    client, _db, _service = api_env
+    antwort = client.post("/api/x/download-link", json={"url": url})
+    assert antwort.status_code == 400
+    assert antwort.get_json()["error"]

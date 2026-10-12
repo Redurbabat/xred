@@ -945,6 +945,27 @@ def create_app(
             return bad
         return _start_x_download(data, single=True)
 
+    @app.post("/api/x/download-link")
+    def x_download_link():
+        """Beliebigen X-Beitragslink herunterladen, auch ohne Suche."""
+        if x_service is None:
+            return _x_unavailable()
+        denied = _same_origin_request()
+        if denied is not None:
+            return denied
+        data, bad = _json_object()
+        if bad is not None:
+            return bad
+        try:
+            post_id = x_service.remember_link(data.get("url"))
+        except (TypeError, ValueError) as exc:
+            return _x_error(exc, 400)
+        except Exception as exc:
+            return _x_error(exc, 503)
+        if not x_service.start_download([post_id]):
+            return jsonify(error="Es läuft bereits eine X-Suche oder ein X-Download."), 409
+        return jsonify(ok=True, post_id=post_id), 202
+
     @app.post("/api/x/download-selected")
     def x_download_selected():
         denied = _same_origin_request()

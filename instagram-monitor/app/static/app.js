@@ -2084,6 +2084,8 @@ async function doLogout(){ if(confirm("Wirklich abmelden?")){ await api("/api/lo
 
 /* ---------- X-Videos (nur lokale Browser-Sitzung auf dem PC) ---------- */
 let xResults=[], xSelected=new Set(), xPollTimer=null, xLastNotice="", xAvailable=true;
+// post_id -> Grund, warum der Download scheiterte (wird auf der Karte gezeigt).
+const xFailed=new Map();
 // Anmelde-Token gegen CSRF: liefert der lokale Server nur an diesen PC.
 let xCsrfToken="";
 
@@ -2147,6 +2149,11 @@ function showXVideos(){
           <button class="btn ghost" id="x_bookmarks_btn" onclick="xStartCollection('bookmarks')" title="Videos aus deinen X-Lesezeichen">🔖 Lesezeichen</button>
           <button class="btn ghost" id="x_likes_btn" onclick="xStartCollection('likes')" title="Videos aus deinen X-Likes">♥ Likes</button>
           <button class="btn ghost" id="x_search_cancel" onclick="xCancelSearch()" style="display:none">Abbrechen</button>
+        </div>
+        <label class="x-query x-link-row"><span>Oder Link einfügen (jeder X-Beitrag, auch ohne Suche)</span>
+          <input id="x_link" maxlength="300" placeholder="https://x.com/name/status/123…" onkeydown="if(event.key==='Enter')xDownloadLink()"></label>
+        <div class="x-search-actions">
+          <button class="btn" id="x_link_btn" onclick="xDownloadLink()">Link herunterladen</button>
         </div>
       </div>
       <div class="x-warning" id="x_warning" style="display:none"></div>
@@ -2307,6 +2314,18 @@ async function xStartCollection(source){
   return xStartJob({source:source}, source==="likes"?"x_likes_btn":"x_bookmarks_btn");
 }
 
+async function xDownloadLink(){
+  const feld=$("x_link"); if(!feld) return;
+  const url=(feld.value||"").trim();
+  if(!url){ toast("Bitte einen X-Link einfügen.","err"); feld.focus(); return; }
+  const btn=$("x_link_btn"); if(btn) btn.disabled=true;
+  const {data}=await api("/api/x/download-link",{method:"POST",
+    headers:{"Content-Type":"application/json"},body:JSON.stringify({url:url})});
+  if(btn) btn.disabled=false;
+  if(data.error){ toast(data.error,"err"); xSetWarning(data.error); return; }
+  feld.value=""; xSetWarning(""); toast("Download gestartet.","ok"); xSchedulePoll(100);
+}
+
 async function xStartJob(fields,btnId){
   const payload=Object.assign({limit:$("x_limit").value},fields);
   const btn=$(btnId); if(btn) btn.disabled=true;
@@ -2346,7 +2365,17 @@ async function xPollJobs(){
   if(s.items && (s.items.length || s.finished)){ xResults=s.items; xRenderResults(); }
   if(d.items){
     const completed=new Set(d.items.filter(i=>i.state==="downloaded"||i.state==="skipped").map(i=>i.post_id));
-    if(completed.size){ xResults.forEach(p=>{ if(completed.has(p.post_id)) p.downloaded=true; }); xRenderResults(); }
+    // Fehlgeschlagene Videos nennen jetzt ihren Grund auf der Karte. Vorher
+    // passierte scheinbar einfach nichts und man wusste nicht, warum.
+    const vorher=xFailed.size;
+    d.items.forEach(i=>{
+      if(i.state==="error" && i.post_id) xFailed.set(i.post_id, i.message||i.error||"Download fehlgeschlagen.");
+      else if(completed.has(i.post_id)) xFailed.delete(i.post_id);
+    });
+    if(completed.size||xFailed.size!==vorher){
+      xResults.forEach(p=>{ if(completed.has(p.post_id)) p.downloaded=true; });
+      xRenderResults();
+    }
   }
   xApplyJobs(s,d);
   const notice=(s.error||d.error||((s.finished&&!s.running)?s.message:"")||((d.finished&&!d.running)?d.message:""));
@@ -2396,7 +2425,8 @@ function xRenderResults(){
       <div class="x-preview">${p.preview_url?`<img loading="lazy" referrerpolicy="no-referrer" src="${esc(p.preview_url)}" alt="Vorschau">`:'<div class="empty">Keine Vorschau</div>'}<b>▶</b>${p.downloaded?'<i>✓ Gespeichert</i>':''}</div>
       <div class="x-card-body"><div class="x-author"><strong>${esc(p.author_name||p.username||"X")}</strong><span>@${esc(p.username||"")}</span></div>
       ${date?`<time>${esc(date)}</time>`:""}<p>${esc(p.caption||"Kein Textauszug verfügbar.")}</p>
-      <div class="x-card-actions"><a class="btn ghost small" href="${esc(p.post_url)}" target="_blank" rel="noopener noreferrer">Auf X öffnen</a><button class="btn small" ${p.downloaded?"disabled":""}>${p.downloaded?"Gespeichert":"Herunterladen"}</button></div></div>`;
+      ${xFailed.has(p.post_id)?`<p class="x-card-error">⚠ ${esc(xFailed.get(p.post_id))}</p>`:""}
+      <div class="x-card-actions"><a class="btn ghost small" href="${esc(p.post_url)}" target="_blank" rel="noopener noreferrer">Auf X öffnen</a><button class="btn small" ${p.downloaded?"disabled":""}>${p.downloaded?"Gespeichert":(xFailed.has(p.post_id)?"Erneut versuchen":"Herunterladen")}</button></div></div>`;
     card.querySelector('.x-select input').onchange=e=>{ if(e.target.checked)xSelected.add(p.post_id);else xSelected.delete(p.post_id);xUpdateSelected(); };
     card.querySelector('.x-card-actions button').onclick=()=>xDownloadOne(p.post_id);
     grid.appendChild(card);

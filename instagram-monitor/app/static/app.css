@@ -319,3 +319,6 @@
     #content.acctgrid .acctrow{flex-wrap:wrap}
     #content.acctgrid .hint,#content.acctgrid .empty{grid-column:1/-1}
   }
+  .x-card-error{margin:6px 0 0;padding:6px 8px;border-radius:8px;font-size:12px;
+        background:rgba(237,73,86,.14);color:var(--err)}
+  .x-link-row{margin-top:10px}

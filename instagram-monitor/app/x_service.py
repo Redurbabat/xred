@@ -937,6 +937,31 @@ class XService:
     def cancel_search(self) -> bool:
         return self.search_job.cancel()
 
+    def remember_link(self, post_url: Any, label: str = "Links") -> str:
+        """Nimmt einen eingefügten X-Link in die Ablage auf.
+
+        Bisher liessen sich nur Beiträge herunterladen, die vorher in einem
+        Suchergebnis standen. Alles, was die Suche nicht erfasst – etwa ein
+        Video, das dir jemand geschickt hat –, war damit unerreichbar.
+        """
+        url = normalize_post_url(post_url)
+        post_id = extract_post_id(url)
+        vorhanden = self.db.get_x_post(post_id)
+        if vorhanden is None:
+            self.db.upsert_x_post(
+                {
+                    "post_id": post_id,
+                    "username": urlsplit(url).path.split("/")[1],
+                    "author_name": "",
+                    "post_url": url,
+                    "search_query": safe_path_component(label, fallback="Links"),
+                    "caption": "",
+                    "preview_url": "",
+                    "published_at": "",
+                }
+            )
+        return post_id
+
     def resolve_post_id(self, *, post_id: Any = "", post_url: Any = "") -> str:
         if post_url:
             resolved = extract_post_id(post_url)
@@ -1576,10 +1601,33 @@ class XService:
             logger.debug("Kontoschalter in der X-Navigation nicht lesbar.", exc_info=True)
         return ""
 
+    # Woran eine Beitragskarte als Video erkennbar ist, auch wenn X den
+    # Player (noch) nicht geladen hat. Genau das war der Grund, warum
+    # manche Videos in Suche und Lesezeichen gar nicht erst auftauchten:
+    # Bei sensiblen Inhalten zeigt X zuerst eine Warnkachel und bindet das
+    # <video>-Element überhaupt nicht ein.
+    _VIDEO_MARKERS = (
+        '[data-testid="videoPlayer"]',
+        '[data-testid="videoComponent"]',
+        '[data-testid="previewInterstitial"]',
+        '[data-testid="playButton"]',
+        'a[href*="/video/"]',
+    )
+
+    def _looks_like_video(self, article: Any) -> bool:
+        for selector in self._VIDEO_MARKERS:
+            try:
+                if article.locator(selector).count():
+                    return True
+            except Exception:
+                continue
+        return False
+
     def _article_data(self, article: Any, query: str) -> Optional[dict[str, Any]]:
         try:
             videos = article.locator("video")
-            if videos.count() == 0 or not videos.first.is_visible():
+            hat_video = videos.count() > 0
+            if not hat_video and not self._looks_like_video(article):
                 return None
             hrefs = article.locator("a[href*='/status/']").evaluate_all(
                 "els => els.map(el => el.href)"
@@ -1599,7 +1647,16 @@ class XService:
             times = article.locator("time")
             if times.count():
                 published_at = times.first.get_attribute("datetime") or ""
-            preview_url = _safe_preview_url(videos.first.get_attribute("poster"))
+            preview_url = ""
+            if hat_video:
+                preview_url = _safe_preview_url(videos.first.get_attribute("poster"))
+            if not preview_url:
+                # Ohne geladenen Player (z. B. Warnkachel bei sensiblen
+                # Inhalten) gibt es kein poster-Attribut – dann das Bild der
+                # Karte nehmen, damit die Vorschau nicht leer bleibt.
+                bilder = article.locator('img[src*="twimg.com"]')
+                if bilder.count():
+                    preview_url = _safe_preview_url(bilder.first.get_attribute("src"))
             caption = ""
             tweet_text = article.locator('[data-testid="tweetText"]')
             if tweet_text.count():

@@ -1324,3 +1324,72 @@ def test_a_strange_author_name_cannot_escape_the_folder(tmp_path: Path):
     assert safe_username_component("") == "unknown"
     assert safe_username_component(None) == "unknown"
     assert safe_username_component("Normaler_Name9") == "Normaler_Name9"
+
+
+# --- Jedes Video erreichbar machen -----------------------------------------
+
+
+class _Markierung:
+    """Eine Beitragskarte, die nur bestimmte Elemente enthält."""
+
+    def __init__(self, vorhanden: set[str]) -> None:
+        self.vorhanden = vorhanden
+
+    def locator(self, selector: str):
+        treffer = 1 if selector in self.vorhanden else 0
+        return type("L", (), {"count": lambda _self: treffer})()
+
+
+def test_a_card_without_a_player_still_counts_as_video(tmp_path: Path):
+    """Bei sensiblen Inhalten zeigt X nur eine Warnkachel – ohne <video>.
+
+    Genau solche Beiträge fehlten vorher komplett in Suche und
+    Lesezeichen, ohne dass irgendwo ein Hinweis erschien.
+    """
+    dienst = _list_service(tmp_path)
+    for marker in XService._VIDEO_MARKERS:
+        assert dienst._looks_like_video(_Markierung({marker})) is True, marker
+    assert dienst._looks_like_video(_Markierung(set())) is False
+    assert dienst._looks_like_video(_Markierung({"img"})) is False
+    dienst.db.close()
+
+
+def test_a_pasted_link_can_be_downloaded(tmp_path: Path):
+    """Vorher ging nur, was vorher in einem Suchergebnis stand."""
+    dienst = _list_service(tmp_path)
+    post_id = dienst.remember_link("https://x.com/alice/status/1234567890")
+    assert post_id == "1234567890"
+    zeile = dienst.db.get_x_post(post_id)
+    assert zeile is not None
+    assert zeile["username"] == "alice"
+    assert zeile["search_query"] == "Links"
+    # Jetzt kennt ihn auch die normale Download-Prüfung.
+    assert dienst.resolve_post_id(post_url="https://x.com/alice/status/1234567890") == post_id
+    dienst.db.close()
+
+
+def test_a_known_post_keeps_its_original_source(tmp_path: Path):
+    dienst = _list_service(tmp_path)
+    dienst.db.upsert_x_post({
+        "post_id": "2222222222", "username": "bob", "author_name": "Bob",
+        "post_url": "https://x.com/bob/status/2222222222",
+        "search_query": "Lesezeichen", "caption": "", "preview_url": "",
+        "published_at": "",
+    })
+    dienst.remember_link("https://x.com/bob/status/2222222222")
+    assert dienst.db.get_x_post("2222222222")["search_query"] == "Lesezeichen"
+    dienst.db.close()
+
+
+@pytest.mark.parametrize("schlecht", [
+    "https://example.com/a/status/1234567890",
+    "http://x.com/a/status/1234567890",
+    "https://x.com/alice",
+    "kein-link",
+    "",
+])
+def test_a_foreign_or_broken_link_is_refused(tmp_path: Path, schlecht):
+    dienst = _list_service(tmp_path)
+    with pytest.raises(XValidationError):
+        dienst.remember_link(schlecht)
+    dienst.db.close()
