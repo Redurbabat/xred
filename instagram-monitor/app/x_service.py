@@ -2012,11 +2012,13 @@ class XService:
             )
         if "no video could be found" in lower:
             return (
-                "X gibt für diesen Beitrag kein Video heraus. Meist einer von drei "
-                "Gründen: Der Beitrag enthält nur Fotos oder ein GIF; das Video "
-                "steckt im ZITIERTEN Beitrag (dann dessen Link verwenden); oder er "
-                "ist als sensibel eingestuft und die Anmeldung fehlt bzw. ist "
-                "abgelaufen – in dem Fall oben die X-Sitzung erneuern."
+                "X gibt für diesen Beitrag kein Video heraus. Bei als sensibel "
+                "eingestuften Beiträgen liegt es fast immer an einer "
+                "KONTOEINSTELLUNG bei X: Einstellungen → Datenschutz und "
+                "Sicherheit → Inhalte, die du siehst → „Medien anzeigen, die "
+                "sensible Inhalte enthalten könnten“ einschalten, danach die "
+                "X-Sitzung hier erneuern. Sonst: Die Anmeldung ist abgelaufen, "
+                "oder der Beitrag enthält wirklich nur Fotos bzw. ein GIF."
             )
         if "nsfw" in lower or "age" in lower and "restrict" in lower:
             return (

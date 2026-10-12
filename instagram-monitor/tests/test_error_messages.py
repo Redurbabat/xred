@@ -78,9 +78,10 @@ def test_no_video_found_names_all_three_likely_causes():
     text = XService._map_download_error(
         RuntimeError("ERROR: [twitter] 2109614135096848599: No video could be found in this tweet")
     )
-    assert "Fotos" in text          # reiner Bildbeitrag
-    assert "ZITIERTEN" in text      # Video steckt im zitierten Beitrag
-    assert "sensibel" in text       # Anmeldung nötig
+    assert "KONTOEINSTELLUNG" in text   # der haeufigste Grund bei sensiblen Inhalten
+    assert "sensible Inhalte" in text   # genau der Schalter bei X
+    assert "abgelaufen" in text         # zweiter moeglicher Grund
+    assert "Fotos" in text              # dritter: reiner Bildbeitrag
     assert "No video could be found" not in text
 
 
