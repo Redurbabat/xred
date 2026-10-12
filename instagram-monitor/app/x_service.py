@@ -371,10 +371,21 @@ def safe_path_component(value: Any, fallback: str = "suche", max_length: int = 6
     return component or fallback
 
 
+def safe_username_component(username: Any) -> str:
+    """Ein X-Name als Ordner-/Dateinamensteil – ohne Pfadsyntax.
+
+    Bewusst NICHT ``safe_path_component``: Das geht über
+    ``normalize_search_query`` und lehnt Eingaben ab, die als Suchbegriff
+    unsinnig wären. Hier zählt nur, dass nichts Gefährliches übrig bleibt;
+    echte X-Namen bestehen ohnehin aus [A-Za-z0-9_].
+    """
+    return re.sub(r"[^A-Za-z0-9_]", "_", str(username or "unknown"))[:50] or "unknown"
+
+
 def safe_media_filename(post_id: str, username: str, index: int, suffix: str = ".mp4") -> str:
     if not _POST_ID_RE.fullmatch(str(post_id)):
         raise XValidationError("Ungültige X-Beitrags-ID.")
-    safe_user = re.sub(r"[^A-Za-z0-9_]", "_", str(username or "unknown"))[:50] or "unknown"
+    safe_user = safe_username_component(username)
     safe_suffix = suffix.lower() if suffix.lower() in _VIDEO_SUFFIXES else ".mp4"
     return f"{post_id}_{safe_user}_{max(1, int(index))}{safe_suffix}"
 
@@ -1481,10 +1492,20 @@ class XService:
         post_url = normalize_post_url(row["post_url"])
         username = str(row["username"] or urlsplit(post_url).path.split("/")[1])
         query_dir = safe_path_component(row["search_query"] or "suche")
-        videos_dir = self.settings.download_dir / "X" / query_dir / "Videos"
+        source_dir = self.settings.download_dir / "X" / query_dir
+        # Je Urheber ein eigener Ordner, innerhalb der Quelle (Suchbegriff,
+        # „Likes“ oder „Lesezeichen“). So liegen die Videos einer Person
+        # beieinander, ohne dass der Zusammenhang verloren geht.
+        videos_dir = source_dir / safe_username_component(username) / "Videos"
         videos_dir.mkdir(parents=True, exist_ok=True)
+        # Frühere Versionen legten alles flach unter <Quelle>/Videos ab. Der
+        # Altbestand wird mitgesucht, sonst gälte er als „noch nicht geladen“
+        # und würde ein zweites Mal heruntergeladen.
+        legacy_dir = source_dir / "Videos"
         existing = sorted(
-            path for path in videos_dir.glob(f"{post_id}_*")
+            path
+            for folder in (videos_dir, legacy_dir)
+            for path in folder.glob(f"{post_id}_*")
             if path.is_file() and path.suffix.lower() in _VIDEO_SUFFIXES
         )
         if self.db.is_x_post_downloaded(post_id) or existing:

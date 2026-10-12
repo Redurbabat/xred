@@ -30,6 +30,7 @@ from app.x_service import (
     redact_secret,
     safe_media_filename,
     safe_path_component,
+    safe_username_component,
     source_label,
     validate_password,
     validate_result_limit,
@@ -1240,3 +1241,81 @@ def test_a_list_without_videos_keeps_scrolling_until_the_page_stands_still(tmp_p
     # … aber am Seitenende beendet und nicht bis ans Rundenlimit gelaufen.
     assert page.scrolls < 20
     service.db.close()
+
+
+# --- Ablage je Urheber ------------------------------------------------------
+
+
+def _x_service_mit_beitrag(tmp_path: Path, post_id: str, *, query: str = "#test",
+                           author: str = "alice"):
+    db = Database(tmp_path / "d.db")
+    settings = Settings(db, default_download_dir=str(tmp_path / "downloads"))
+    db.upsert_x_post(
+        {
+            "post_id": post_id,
+            "username": author,
+            "author_name": author.title(),
+            "post_url": f"https://x.com/{author}/status/{post_id}",
+            "search_query": query,
+            "caption": "",
+            "preview_url": "",
+            "published_at": "",
+        }
+    )
+    service = XService(
+        db, settings, tmp_path / "session",
+        ytdlp_factory=lambda options: _FakeYdl(options, "nie"),
+    )
+    service._export_cookie_file = lambda: None
+    return service, db, settings
+
+
+def test_videos_land_in_a_folder_per_author(tmp_path: Path):
+    post_id = "3333333333"
+    service, db, settings = _x_service_mit_beitrag(tmp_path, post_id)
+    assert service.start_download([post_id])
+    assert _wait(service.download_job)["downloaded"] == 1
+
+    ziel = settings.download_dir / "X" / "test" / "alice" / "Videos"
+    dateien = list(ziel.glob(f"{post_id}_*"))
+    assert len(dateien) == 1, sorted(p.name for p in ziel.glob("*"))
+    # Der Suchbegriff bleibt als Ebene darüber erhalten.
+    assert not (settings.download_dir / "X" / "test" / "Videos").exists()
+    db.close()
+
+
+def test_the_likes_list_also_separates_by_author(tmp_path: Path):
+    post_id = "4444444444"
+    service, db, settings = _x_service_mit_beitrag(
+        tmp_path, post_id, query="Likes", author="bob"
+    )
+    assert service.start_download([post_id])
+    assert _wait(service.download_job)["downloaded"] == 1
+    assert list((settings.download_dir / "X" / "Likes" / "bob" / "Videos").glob("*.mp4"))
+    db.close()
+
+
+def test_already_downloaded_files_in_the_old_flat_folder_are_found(tmp_path: Path):
+    """Altbestand darf nicht ein zweites Mal geladen werden."""
+    post_id = "5555555555"
+    service, db, settings = _x_service_mit_beitrag(tmp_path, post_id)
+    alt = settings.download_dir / "X" / "test" / "Videos"
+    alt.mkdir(parents=True)
+    (alt / f"{post_id}_alice_1.mp4").write_bytes(b"alt")
+
+    assert service.start_download([post_id])
+    state = _wait(service.download_job)
+    assert state["skipped"] == 1
+    assert state["downloaded"] == 0
+    # Die Datei bleibt, wo sie liegt – nichts wird verschoben oder doppelt.
+    neu = settings.download_dir / "X" / "test" / "alice" / "Videos"
+    assert list(alt.glob("*.mp4"))
+    assert not list(neu.glob("*.mp4"))
+    db.close()
+
+
+def test_a_strange_author_name_cannot_escape_the_folder(tmp_path: Path):
+    assert safe_username_component("../../etc") == "______etc"
+    assert safe_username_component("") == "unknown"
+    assert safe_username_component(None) == "unknown"
+    assert safe_username_component("Normaler_Name9") == "Normaler_Name9"

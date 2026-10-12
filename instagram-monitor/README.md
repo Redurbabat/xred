@@ -97,10 +97,17 @@ dem PC selbst vorbehalten.
 Downloads landen deterministisch unter:
 
 ```text
-<Download-Ordner>/X/<bereinigter-suchbegriff>/Videos/
-<Download-Ordner>/X/Lesezeichen/Videos/
-<Download-Ordner>/X/Likes/Videos/
+<Download-Ordner>/X/<bereinigter-suchbegriff>/<urheber>/Videos/
+<Download-Ordner>/X/Lesezeichen/<urheber>/Videos/
+<Download-Ordner>/X/Likes/<urheber>/Videos/
 ```
+
+Jeder Urheber bekommt also seinen eigenen Ordner – wie beim
+Instagram-Teil, wo jedes Konto schon immer getrennt liegt. Die Ebene
+darüber bleibt die Quelle (Suchbegriff, „Likes“ oder „Lesezeichen“), damit
+der Zusammenhang erhalten bleibt. Dateien aus früheren Versionen liegen
+flach unter `<Quelle>/Videos/`; sie werden weiterhin erkannt und **nicht**
+erneut heruntergeladen.
 
 `yt-dlp` lädt die beste verfügbare Videoqualität mit Audio. Ist FFmpeg
 vorhanden, können getrennte beste Video-/Audiospuren zusammengeführt werden;
@@ -425,6 +432,56 @@ die App läuft damit vollständig auf dem Handy:
 App-Speicher (`Android/data/de.redur.igmonitor/files/`). Der
 Projektordner `android/` enthält das zugehörige Android-Projekt
 (Chaquopy) – es lässt sich auch lokal mit Android Studio bauen.
+
+#### Signaturschlüssel einrichten (einmalig)
+
+Android installiert eine neue APK nur dann über eine vorhandene, wenn
+**beide mit demselben Schlüssel signiert** sind. Sonst kommt „Paket-
+Konflikt" und die alte App muss erst deinstalliert werden.
+
+Ohne hinterlegten Schlüssel baut der Workflow mit einer wechselnden
+Debug-Signatur – jede APK ist dann eine „fremde App". Einmalig einrichten:
+
+1. Auf dem PC einen Schlüssel erzeugen (gültig ~27 Jahre). `<PASSWORT>`
+   durch ein eigenes ersetzen und notieren:
+
+   ```bash
+   keytool -genkeypair -keystore igmonitor.p12 -storetype PKCS12 \
+     -storepass '<PASSWORT>' -keypass '<PASSWORT>' \
+     -alias igmonitor -keyalg RSA -keysize 2048 -validity 10000 \
+     -dname "CN=Instagram Monitor, OU=App, O=Redur, C=CH"
+   ```
+
+2. Die Datei in Text umwandeln:
+
+   ```bash
+   base64 -w0 igmonitor.p12 > igmonitor.p12.b64     # Linux
+   base64 -i igmonitor.p12 -o igmonitor.p12.b64     # macOS
+   ```
+
+   Windows (PowerShell):
+
+   ```powershell
+   [Convert]::ToBase64String([IO.File]::ReadAllBytes("igmonitor.p12")) > igmonitor.p12.b64
+   ```
+
+3. Auf GitHub unter **Settings → Secrets and variables → Actions → New
+   repository secret** drei Einträge anlegen:
+
+   | Name | Inhalt |
+   |---|---|
+   | `IGMON_KEYSTORE_B64` | der gesamte Inhalt von `igmonitor.p12.b64` |
+   | `IGMON_STORE_PASSWORD` | dein `<PASSWORT>` |
+   | `IGMON_KEY_PASSWORD` | dasselbe `<PASSWORT>` |
+
+4. **`igmonitor.p12` sicher aufbewahren** (Passwortmanager, Backup) und
+   **nicht** ins Repo legen. Geht die Datei verloren, lässt sich keine
+   installierbare Aktualisierung mehr bauen – dann hilft nur noch
+   deinstallieren und neu installieren.
+
+Ab dann baut der Workflow eine echte Release-APK mit stabiler Signatur.
+Der Fingerabdruck steht im Build-Protokoll („Signatur-Fingerabdruck
+anzeigen") und muss über Builds hinweg gleich bleiben.
 
 ### iPhone: Herunterladen aufs Handy
 
