@@ -335,3 +335,4 @@
         justify-content:center}
   .x-preview.hidden-preview .empty{font-size:12px; letter-spacing:.04em}
   .btn.active{background:var(--accent); color:#fff; border-color:var(--accent)}
+  .x-all-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px}

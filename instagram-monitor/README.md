@@ -204,6 +204,21 @@ Downloads landen deterministisch unter:
 <Download-Ordner>/X/Likes/<urheber>/Videos/
 ```
 
+Zusätzlich erscheint **jedes** geladene Video noch einmal im Sammelordner
+`X/Alle/` – dort siehst du alles auf einen Blick, ohne dich durch die
+Unterordner zu klicken. Das kostet **keinen** zusätzlichen Speicherplatz:
+Es wird eine harte Verknüpfung angelegt, die Datei liegt also weiterhin
+nur einmal auf der Platte und ist nur an zwei Stellen sichtbar. Löschst
+du im Sammelordner, bleibt das Original erhalten und umgekehrt.
+
+Liegt der Download-Ordner auf einem Dateisystem ohne harte Verknüpfungen
+(etwa FAT32 oder ein anderes Laufwerk), wird stattdessen kopiert – dann
+steht ein Hinweis im Log, weil das Platz kostet.
+
+Ältere Downloads trägt der Knopf **„🗂 Sammelordner „Alle“ aufbauen"**
+unter „Letzte X-Downloads" nach. Mehrfaches Drücken schadet nicht,
+Vorhandenes wird übersprungen.
+
 Jeder Urheber bekommt also seinen eigenen Ordner – wie beim
 Instagram-Teil, wo jedes Konto schon immer getrennt liegt. Die Ebene
 darüber bleibt die Quelle (Suchbegriff, „Likes“ oder „Lesezeichen“), damit

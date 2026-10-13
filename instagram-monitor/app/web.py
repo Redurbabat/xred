@@ -946,6 +946,19 @@ def create_app(
             return bad
         return _start_x_download(data, single=True)
 
+    @app.post("/api/x/rebuild-all")
+    def x_rebuild_all():
+        """Trägt vorhandene X-Downloads in den Sammelordner „Alle“ nach."""
+        if x_service is None:
+            return _x_unavailable()
+        denied = _same_origin_request()
+        if denied is not None:
+            return denied
+        try:
+            return jsonify(x_service.rebuild_all_folder())
+        except Exception as exc:
+            return _x_error(exc, 503)
+
     @app.post("/api/x/download-link")
     def x_download_link():
         """Beliebigen X-Beitragslink herunterladen, auch ohne Suche."""

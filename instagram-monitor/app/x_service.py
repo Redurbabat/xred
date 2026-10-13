@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import logging
+import os
 import queue
 import re
 import shutil
@@ -55,6 +56,10 @@ _USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 # Von diesem Host liefert X seine Videodateien aus.
 _MEDIA_HOST = "video.twimg.com"
+# Sammelordner: Hier erscheint JEDES geladene X-Video noch einmal, damit
+# man alles an einer Stelle durchsehen kann, ohne durch die Unterordner
+# je Quelle und Urheber zu klicken.
+_ALL_DIR = "Alle"
 _TOKEN_MIN, _TOKEN_MAX = 16, 200
 _TOKEN_RE = re.compile(rf"^[0-9a-fA-F]{{{_TOKEN_MIN},{_TOKEN_MAX}}}$")
 # Von Hand hinterlegte Sitzung (Token-Anmeldung) im Profilordner.
@@ -1885,7 +1890,18 @@ class XService:
         return gefunden[:5]
 
     def _media_urls_via_browser(self, post_url: str) -> list[str]:
-        """Wie oben, aber von außerhalb des Browser-Threads aufrufbar."""
+        """Wie oben, aber von außerhalb des Browser-Threads aufrufbar.
+
+        Nur bei bereits offenem Fenster: Müsste erst eines gestartet werden,
+        würde jeder fehlgeschlagene Download diesen Start abwarten – bei
+        einer Liste voller Fehlschläge summiert sich das, und auf einem
+        Rechner ohne startfähiges Chromium wartet man jedes Mal umsonst.
+        Nach einer Suche, einem Lesezeichen- oder Likes-Lauf steht das
+        Fenster ohnehin offen, also genau dann, wenn der Rückfall zählt.
+        """
+        if not self._browser_open:
+            logger.info("Browser-Rückfall übersprungen: kein offenes X-Fenster.")
+            return []
         try:
             urls = self._browser_call(
                 "media_urls", {"post_url": post_url}, timeout=90
@@ -1894,6 +1910,66 @@ class XService:
             logger.info("Browser-Rückfall nicht möglich: %s", public_error(exc))
             return []
         return [u for u in (urls or []) if is_media_url(u)]
+
+    # ------------------------------------------------------------------
+    # Sammelordner „Alle“
+    # ------------------------------------------------------------------
+    def _all_dir(self) -> Path:
+        return self.settings.download_dir / "X" / _ALL_DIR
+
+    def _link_into_all(self, datei: Path) -> str:
+        """Macht eine Datei zusätzlich im Sammelordner sichtbar.
+
+        Bevorzugt eine HARTE Verknüpfung: Die Datei liegt dann weiterhin nur
+        einmal auf der Platte, ist aber an beiden Stellen zu sehen, und das
+        Löschen an einer Stelle lässt die andere unberührt. Harte
+        Verknüpfungen gehen nur innerhalb desselben Laufwerks; scheitert es
+        (anderes Laufwerk, FAT32), wird kopiert – das kostet dann Platz.
+
+        Rückgabe: „verknuepft“, „kopiert“, „vorhanden“ oder „“ (nicht möglich).
+        """
+        ziel_ordner = self._all_dir()
+        ziel = ziel_ordner / datei.name
+        if ziel.exists():
+            return "vorhanden"
+        try:
+            ziel_ordner.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            logger.debug("Sammelordner nicht anlegbar.", exc_info=True)
+            return ""
+        try:
+            os.link(datei, ziel)
+            return "verknuepft"
+        except OSError:
+            pass
+        try:
+            shutil.copy2(datei, ziel)
+            logger.warning(
+                "Sammelordner: %s musste KOPIERT werden (harte Verknüpfung nicht "
+                "möglich) – das belegt zusätzlichen Speicherplatz.", datei.name,
+            )
+            return "kopiert"
+        except OSError:
+            logger.debug("Datei nicht in den Sammelordner übernehmbar.", exc_info=True)
+            return ""
+
+    def rebuild_all_folder(self) -> dict[str, int]:
+        """Trägt auch ältere Downloads in den Sammelordner nach."""
+        wurzel = self.settings.download_dir / "X"
+        ergebnis = {"geprueft": 0, "verknuepft": 0, "kopiert": 0, "vorhanden": 0, "fehler": 0}
+        if not wurzel.is_dir():
+            return ergebnis
+        sammel = self._all_dir()
+        for datei in sorted(wurzel.rglob("*")):
+            if not datei.is_file() or datei.suffix.lower() not in _VIDEO_SUFFIXES:
+                continue
+            if sammel in datei.parents:
+                continue  # den Sammelordner selbst nicht noch einmal einsammeln
+            ergebnis["geprueft"] += 1
+            stand = self._link_into_all(datei)
+            ergebnis[stand if stand else "fehler"] += 1
+        logger.info("Sammelordner aufgebaut: %s", ergebnis)
+        return ergebnis
 
     @staticmethod
     def _alt_urls(row: Any) -> list[str]:
@@ -2032,6 +2108,7 @@ class XService:
                 else:
                     source.replace(target)
                 final_paths.append(str(target))
+                self._link_into_all(target)
             self.db.mark_x_post_downloaded(post_id, final_paths[0])
             return "downloaded", final_paths
         finally:

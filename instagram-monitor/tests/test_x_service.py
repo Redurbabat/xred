@@ -1521,6 +1521,7 @@ def test_foreign_or_odd_addresses_are_refused(schlecht):
 def test_the_browser_fallback_only_passes_on_checked_addresses(tmp_path: Path):
     """Auch wenn der Browser Unsinn meldet, darf nichts davon durchrutschen."""
     dienst = _list_service(tmp_path)
+    dienst._browser_open = True          # der Rückfall setzt ein offenes Fenster voraus
     dienst._browser_call = lambda *a, **k: [
         "https://video.twimg.com/ext_tw_video/1/pl/gut.m3u8",
         "https://boese.example/schad.mp4",
@@ -1534,6 +1535,7 @@ def test_the_browser_fallback_only_passes_on_checked_addresses(tmp_path: Path):
 
 def test_a_broken_browser_does_not_break_the_download(tmp_path: Path):
     dienst = _list_service(tmp_path)
+    dienst._browser_open = True
 
     def kaputt(*a, **k):
         raise RuntimeError("Fenster ist zu")
@@ -1759,4 +1761,82 @@ def test_the_limit_fills_up_with_new_hits(tmp_path: Path):
         skip_downloaded=True,
     )
     assert [t["post_id"] for t in treffer] == ["900000002", "900000003"]
+    dienst.db.close()
+
+
+# --- Sammelordner „Alle“ ---------------------------------------------------
+
+
+def test_a_download_also_appears_in_the_all_folder(tmp_path: Path):
+    post_id = "8888888881"
+    service, db, settings = _x_service_mit_beitrag(tmp_path, post_id, author="alice")
+    assert service.start_download([post_id])
+    assert _wait(service.download_job)["downloaded"] == 1
+
+    original = list((settings.download_dir / "X" / "test" / "alice" / "Videos").glob("*.mp4"))
+    sammel = list((settings.download_dir / "X" / "Alle").glob("*.mp4"))
+    assert len(original) == 1 and len(sammel) == 1
+    assert sammel[0].name == original[0].name
+    # Harte Verknüpfung: dieselbe Datei, kein zusätzlicher Platzbedarf.
+    assert sammel[0].stat().st_ino == original[0].stat().st_ino
+    assert sammel[0].read_bytes() == original[0].read_bytes()
+    db.close()
+
+
+def test_deleting_in_the_all_folder_keeps_the_original(tmp_path: Path):
+    post_id = "8888888882"
+    service, db, settings = _x_service_mit_beitrag(tmp_path, post_id, author="bob")
+    assert service.start_download([post_id])
+    _wait(service.download_job)
+    sammel = next((settings.download_dir / "X" / "Alle").glob("*.mp4"))
+    sammel.unlink()
+    assert list((settings.download_dir / "X" / "test" / "bob" / "Videos").glob("*.mp4"))
+    db.close()
+
+
+def test_older_downloads_can_be_added_afterwards(tmp_path: Path):
+    """Der Knopf fuer alles, was vor dieser Neuerung geladen wurde."""
+    dienst = _list_service(tmp_path)
+    wurzel = dienst.settings.download_dir / "X"
+    for ordner, name in (("suche1/alice/Videos", "1_alice_1.mp4"),
+                         ("Likes/bob/Videos", "2_bob_1.mp4"),
+                         ("Lesezeichen/Videos", "3_alt_1.mp4")):   # auch Altbestand
+        ziel = wurzel / ordner
+        ziel.mkdir(parents=True, exist_ok=True)
+        (ziel / name).write_bytes(b"video")
+    (wurzel / "suche1" / "alice" / "Videos" / "notiz.txt").write_text("kein Video")
+
+    ergebnis = dienst.rebuild_all_folder()
+    assert ergebnis["geprueft"] == 3            # die .txt zaehlt nicht mit
+    assert ergebnis["verknuepft"] + ergebnis["kopiert"] == 3
+    assert {p.name for p in (wurzel / "Alle").glob("*.mp4")} == {
+        "1_alice_1.mp4", "2_bob_1.mp4", "3_alt_1.mp4"}
+
+    # Zweiter Lauf: nichts doppelt, und der Sammelordner frisst sich nicht selbst.
+    zweiter = dienst.rebuild_all_folder()
+    assert zweiter["geprueft"] == 3
+    assert zweiter["vorhanden"] == 3
+    assert zweiter["verknuepft"] == 0
+    dienst.db.close()
+
+
+def test_rebuilding_without_any_downloads_is_harmless(tmp_path: Path):
+    dienst = _list_service(tmp_path)
+    assert dienst.rebuild_all_folder()["geprueft"] == 0
+    dienst.db.close()
+
+
+def test_without_an_open_window_the_fallback_is_skipped(tmp_path: Path):
+    """Sonst wartet jeder Fehlschlag auf einen Browserstart, der vielleicht
+
+    gar nicht gelingt – bei einer langen Liste summiert sich das.
+    """
+    dienst = _list_service(tmp_path)
+
+    def nie(*a, **k):
+        raise AssertionError("ohne offenes Fenster nicht aufrufen")
+
+    dienst._browser_call = nie
+    assert dienst._browser_open is False
+    assert dienst._media_urls_via_browser("https://x.com/a/status/1") == []
     dienst.db.close()

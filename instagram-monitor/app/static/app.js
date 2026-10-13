@@ -2218,7 +2218,12 @@ function showXVideos(){
         <button class="btn ghost small" onclick="xDownloadAllNew()">Alle neuen herunterladen</button>
       </div>
       <div id="x_results"><div class="empty">Es wurde noch keine X-Suche gestartet.</div></div>
-      <details class="panel x-recent"><summary>Letzte X-Downloads</summary><div id="x_recent" class="hint">Noch keine X-Downloads gespeichert.</div></details>
+      <details class="panel x-recent"><summary>Letzte X-Downloads</summary><div id="x_recent" class="hint">Noch keine X-Downloads gespeichert.</div>
+        <div class="x-all-row">
+          <button class="btn ghost small" id="x_rebuild_btn" onclick="xRebuildAll()">🗂 Sammelordner „Alle“ aufbauen</button>
+          <span class="hint" id="x_rebuild_note">Neue Downloads landen automatisch zusätzlich in <code>X/Alle/</code>. Dieser Knopf trägt ältere nach.</span>
+        </div>
+      </details>
       <div class="hint x-legal">Lade nur öffentlich zugängliche Inhalte herunter, für die du die erforderlichen Rechte besitzt, und beachte die X-Nutzungsbedingungen. Die App umgeht keine Zugriffs- oder Schutzmechanismen.</div>
     </section>`;
   xUpdatePrivacyButton(); xUpdateOnlyNewButton();  // gemerkte Einstellungen anzeigen
@@ -2365,6 +2370,20 @@ async function xStartSearch(){
 // Suchbegriff, Sortierung und Repost-Filter gelten dort nicht.
 async function xStartCollection(source){
   return xStartJob({source:source}, source==="likes"?"x_likes_btn":"x_bookmarks_btn");
+}
+
+async function xRebuildAll(){
+  const btn=$("x_rebuild_btn"), note=$("x_rebuild_note");
+  if(btn){ btn.disabled=true; btn.textContent="Wird aufgebaut …"; }
+  const {data}=await api("/api/x/rebuild-all",{method:"POST",
+    headers:{"Content-Type":"application/json"}});
+  if(btn){ btn.disabled=false; btn.textContent="🗂 Sammelordner „Alle“ aufbauen"; }
+  if(data.error){ toast(data.error,"err"); return; }
+  const neu=(data.verknuepft||0)+(data.kopiert||0);
+  const text=`${data.geprueft||0} Dateien geprüft · ${neu} neu im Sammelordner · `
+    +`${data.vorhanden||0} waren schon da`+((data.fehler||0)?` · ${data.fehler} nicht möglich`:"");
+  if(note) note.textContent=text;
+  toast(text,"ok");
 }
 
 async function xDownloadLink(){
