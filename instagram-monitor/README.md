@@ -219,6 +219,12 @@ steht ein Hinweis im Log, weil das Platz kostet.
 unter „Letzte X-Downloads" nach. Mehrfaches Drücken schadet nicht,
 Vorhandenes wird übersprungen.
 
+**Ohne die App:** Dafür gibt es auch ein Programm zum Doppelklicken –
+**`sammeln.bat`** (Windows) bzw. **`./sammeln.sh`** (Linux/macOS) im
+Ordner `instagram-monitor`. Es macht dasselbe, braucht aber keine
+laufende Oberfläche, und zeigt am Ende, wie viele Dateien dazugekommen
+sind. Es wird nichts verschoben und nichts gelöscht.
+
 Jeder Urheber bekommt also seinen eigenen Ordner – wie beim
 Instagram-Teil, wo jedes Konto schon immer getrennt liegt. Die Ebene
 darüber bleibt die Quelle (Suchbegriff, „Likes“ oder „Lesezeichen“), damit
